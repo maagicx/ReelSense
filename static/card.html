@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media card</title>
+<!-- MCP App for channel_info, video_info, the transcribe tools, get_frames, identify_music and the track searches: the host renders this in a sandboxed iframe
+     and posts the tool result to it (io.modelcontextprotocol/ui). Self-contained: no
+     external scripts. Images come from the result's URL, or inline from _meta.image when
+     the server fetched one the card couldn't load itself. -->
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f1f1e; --muted: #6b6a66; --line: #e6e4dd; --accent: #3b6fd8;
+    --badge-bg: rgba(0, 0, 0, .78); --badge-fg: #fff; --live: #d93025;
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --bg: #262624; --fg: #f2f1ec; --muted: #a8a69e; --line: #3d3c38; --accent: #7aa2f7;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #262624; --fg: #f2f1ec; --muted: #a8a69e; --line: #3d3c38; --accent: #7aa2f7;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .card { display: flex; gap: 14px; padding: 14px 16px; align-items: flex-start; }
+  .avatar, .initial { flex: none; width: 64px; height: 64px; border-radius: 50%; background: var(--line); }
+  .avatar { object-fit: cover; }
+  .initial { display: grid; place-items: center; font-size: 26px; font-weight: 600; color: var(--muted); }
+  .thumb { flex: none; position: relative; width: 192px; aspect-ratio: 16 / 9; border-radius: 8px;
+    overflow: hidden; background: var(--line); }
+  .thumb.portrait { width: 96px; aspect-ratio: 3 / 4; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .badge { position: absolute; right: 6px; bottom: 6px; padding: 1px 5px; border-radius: 4px;
+    background: var(--badge-bg); color: var(--badge-fg); font-size: 12px; font-weight: 600;
+    font-variant-numeric: tabular-nums; }
+  .badge.live { background: var(--live); }
+  .body { min-width: 0; flex: 1; }
+  .name { font-size: 16px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 6px; }
+  .name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title { font-size: 15px; font-weight: 600; margin: 0; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .tick { flex: none; width: 16px; height: 16px; color: var(--muted); }
+  .meta { color: var(--muted); margin: 2px 0 0; display: flex; flex-wrap: wrap; gap: 0 10px; }
+  .meta a { color: inherit; text-decoration: none; }
+  .meta a:hover { text-decoration: underline; }
+  .desc { margin: 8px 0 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden; white-space: pre-line; overflow-wrap: anywhere; }
+  .desc.short { -webkit-line-clamp: 2; }
+  .open { margin-top: 8px; display: inline-block; color: var(--accent); text-decoration: none;
+    font-weight: 500; }
+  .open:hover { text-decoration: underline; }
+  .actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-top: 8px; }
+  .actions .open { margin-top: 0; }
+  button.open { all: unset; cursor: pointer; color: var(--accent); font-weight: 500; }
+  button.open:hover { text-decoration: underline; }
+  button.open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  .copied { color: var(--muted); font-size: 13px; }
+  .copybox { display: block; width: 100%; height: 160px; margin-top: 8px; resize: vertical;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .error { padding: 14px 16px; color: var(--muted); }
+  .frames { padding: 14px 16px; }
+  .frames .title { font-size: 15px; }
+  .viewer { margin-top: 10px; position: relative; background: #000; border-radius: 8px; overflow: hidden;
+    display: grid; place-items: center; }
+  .viewer img { display: block; max-width: 100%; max-height: 420px; object-fit: contain; }
+  .caption { display: flex; gap: 12px; align-items: baseline; margin-top: 6px; color: var(--muted); }
+  .caption .open { margin-top: 0; }
+  .strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin-top: 10px; }
+  .strip button { all: unset; cursor: pointer; position: relative; border-radius: 6px; overflow: hidden;
+    aspect-ratio: 16 / 9; background: #000; outline: 2px solid transparent; outline-offset: -2px; }
+  .strip button[aria-current="true"] { outline-color: var(--accent); }
+  .strip button:focus-visible { outline-color: var(--accent); }
+  .strip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .strip .badge { right: 4px; bottom: 4px; font-size: 11px; }
+  .music { padding: 14px 16px; }
+  .music > .meta { margin-bottom: 4px; }
+  .tracks { list-style: none; margin: 8px 0 0; padding: 0; }
+  .track { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+  .track:first-child { border-top: 0; }
+  .track[hidden] { display: none; }
+  .art { flex: none; width: 56px; height: 56px; border-radius: 6px; object-fit: cover; background: var(--line); }
+  .art.note { display: grid; place-items: center; color: var(--muted); font-size: 22px; }
+  .tracks.many .art { width: 40px; height: 40px; font-size: 16px; }
+  .track .body { display: flex; flex-direction: column; }
+  .track .title { font-size: 14px; -webkit-line-clamp: 1; }
+  .track .meta { margin: 0; font-size: 13px; }
+  .track .actions { margin-top: 4px; gap: 4px 10px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; background: var(--accent);
+    color: var(--bg); font-weight: 600; font-size: 13px; text-decoration: none; }
+  .pill:hover { filter: brightness(1.08); }
+  .track .open { font-size: 13px; }
+  .track.later, .track.doubtful { opacity: .55; }
+  .credited { margin: 10px 0 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .flag { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .nomatch { margin: 8px 0 0; color: var(--muted); }
+  @media (max-width: 440px) {
+    .card.video { flex-direction: column; }
+    .card.video .thumb { width: 100%; }
+    .card.video .thumb.portrait { width: 50%; }
+  }
+</style>
+</head>
+<body>
+<div id="tmcp-card" class="error">Loading…</div>
+<script>
+(() => {
+  const root = document.getElementById("tmcp-card");
+  let nextId = 1;
+  const pending = new Map();
+
+  const post = msg => window.parent.postMessage({ jsonrpc: "2.0", ...msg }, "*");
+  const notify = (method, params) => post({ method, params });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    post({ id, method, params });
+  });
+
+  function applyContext(ctx) {
+    if (!ctx) return;
+    if (ctx.theme === "light" || ctx.theme === "dark") document.documentElement.dataset.theme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+  }
+
+  function reportSize() {
+    const r = document.documentElement.getBoundingClientRect();
+    notify("ui/notifications/size-changed", { width: Math.ceil(r.width), height: Math.ceil(r.height) });
+  }
+
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+
+  const PLATFORMS = { youtube: "YouTube", tiktok: "TikTok", instagram: "Instagram", facebook: "Facebook",
+    x: "X", vimeo: "Vimeo", twitch: "Twitch", soundcloud: "SoundCloud", dailymotion: "Dailymotion" };
+  const platformName = p => PLATFORMS[p] || (p ? p.charAt(0).toUpperCase() + p.slice(1) : "");
+  const compact = n => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
+  const isHttps = u => typeof u === "string" && /^https:\/\//i.test(u);
+  const isImage = u => isHttps(u) || (typeof u === "string" && /^data:image\//.test(u));
+  const initial = name => el("div", "initial", (name || "?").trim().charAt(0).toUpperCase());
+
+  function duration(s) {
+    s = Math.round(s);
+    const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+  }
+
+  function date(iso) {
+    const d = new Date(`${iso}T00:00:00Z`);
+    return isNaN(d) ? iso : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  }
+
+  function openLink(url) {
+    // Sandboxed frames may not navigate; ask the host, fall back to a new tab.
+    request("ui/open-link", { url }).catch(() => window.open(url, "_blank", "noopener"));
+  }
+
+  function link(cls, text, url) {
+    const a = el("a", cls, text);
+    a.href = url;
+    a.addEventListener("click", e => { e.preventDefault(); openLink(url); });
+    return a;
+  }
+
+  function renderChannel(ch, image) {
+    root.className = "card";
+    root.replaceChildren();
+    const name = ch.name || ch.handle || "Channel";
+    // YouTube's avatar_uncropped is the original upload (=s0); ask its CDN for 2x the box.
+    const src = image || (isHttps(ch.avatar) ? ch.avatar.replace(/=s0$/, "=s128") : null);
+    if (isImage(src)) {
+      const img = el("img", "avatar");
+      img.alt = "";
+      img.referrerPolicy = "no-referrer";
+      img.onerror = () => img.replaceWith(initial(name));
+      img.src = src;
+      root.append(img);
+    } else {
+      root.append(initial(name));
+    }
+    const body = el("div", "body");
+    const h = el("p", "name");
+    h.append(el("span", null, name));
+    if (ch.verified) {
+      h.insertAdjacentHTML("beforeend",
+        '<svg class="tick" viewBox="0 0 24 24" aria-label="Verified" role="img"><path fill="currentColor" ' +
+        'd="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1.2 14.2-4-4 1.4-1.4 2.6 2.6 5.6-5.6 1.4 1.4-7 7Z"/></svg>');
+    }
+    body.append(h);
+    const meta = el("p", "meta");
+    if (ch.handle && ch.handle !== name) meta.append(el("span", null, ch.handle));
+    if (typeof ch.subscribers === "number") meta.append(el("span", null, `${compact(ch.subscribers)} subscribers`));
+    if (ch.platform) meta.append(el("span", null, platformName(ch.platform)));
+    if (meta.childNodes.length) body.append(meta);
+    if (ch.description) body.append(el("p", "desc", ch.description));
+    if (isHttps(ch.url)) body.append(link("open", "Open channel ↗", ch.url));
+    root.append(body);
+  }
+
+  // "Copy transcript": the title, link and timestamped lines. The clipboard API needs the
+  // host to grant clipboard-write; failing that, execCommand; failing that, the text is
+  // shown selected in a box so Ctrl+C / Cmd+C still copies it.
+  function copyButton(v, body) {
+    const text = [v.title, v.url, "", v.transcript].filter(x => x != null).join("\n");
+    const button = el("button", "open", "Copy transcript");
+    button.type = "button";
+    const note = el("span", "copied");
+    let box = null;
+    const done = msg => { note.textContent = msg; setTimeout(() => { note.textContent = ""; }, 2500); };
+    const legacy = () => {
+      const t = el("textarea");
+      t.value = text;
+      t.setAttribute("readonly", "");
+      t.style.position = "fixed";
+      t.style.opacity = "0";
+      document.body.append(t);
+      t.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      t.remove();
+      return ok;
+    };
+    const showBox = () => {
+      if (!box) {
+        box = el("textarea", "copybox");
+        box.value = text;
+        box.setAttribute("readonly", "");
+        body.append(box);
+      }
+      box.focus();
+      box.select();
+      done("Selected below: press Ctrl+C (Cmd+C on a Mac) to copy.");
+      reportSize();
+    };
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        done("Copied ✓");
+      } catch {
+        if (legacy()) done("Copied ✓");
+        else showBox();
+      }
+    });
+    const wrap = el("span");
+    wrap.append(button, document.createTextNode(" "), note);
+    return wrap;
+  }
+
+  function renderVideo(v, image) {
+    root.className = "card video";
+    root.replaceChildren();
+    const src = image || v.thumbnail;
+    if (isImage(src)) {
+      const box = el("div", "thumb");
+      const img = el("img");
+      img.alt = "";
+      img.referrerPolicy = "no-referrer";
+      img.onload = () => { if (img.naturalHeight > img.naturalWidth) box.classList.add("portrait"); reportSize(); };
+      img.onerror = () => box.remove();
+      img.src = src;
+      box.append(img);
+      if (v.live_status === "is_live") box.append(el("span", "badge live", "LIVE"));
+      else if (v.duration) box.append(el("span", "badge", duration(v.duration)));
+      root.append(box);
+    }
+    const body = el("div", "body");
+    body.append(el("p", "title", v.title || "Untitled video"));
+    const meta = el("p", "meta");
+    if (v.channel) meta.append(isHttps(v.channel_url) ? link(null, v.channel, v.channel_url) : el("span", null, v.channel));
+    if (typeof v.channel_followers === "number") meta.append(el("span", null, `${compact(v.channel_followers)} subscribers`));
+    if (meta.childNodes.length) body.append(meta);
+    const stats = el("p", "meta");
+    const s = v.stats || {};
+    if (typeof s.view_count === "number") stats.append(el("span", null, `${compact(s.view_count)} views`));
+    if (typeof s.like_count === "number") stats.append(el("span", null, `${compact(s.like_count)} likes`));
+    if (v.published) stats.append(el("span", null, date(v.published)));
+    if (!isImage(src) && v.duration) stats.append(el("span", null, duration(v.duration)));
+    if (v.platform) stats.append(el("span", null, platformName(v.platform)));
+    if (v.section) {
+      const sec = v.section, to = sec.end != null ? duration(sec.end) : "end";
+      stats.append(el("span", null, `Transcribed ${duration(sec.start)}–${to}${sec.chapter ? ` (${sec.chapter})` : ""}`));
+    }
+    if (typeof v.auto_captions === "boolean") stats.append(el("span", null, `Auto captions: ${v.auto_captions ? "yes" : "no"}`));
+    if (stats.childNodes.length) body.append(stats);
+    // TikTok's title is its caption cut short, so the description would only repeat it.
+    const stem = (v.title || "").replace(/(\.\.\.|…)$/, "").trim();
+    if (v.description && !(stem && v.description.startsWith(stem))) body.append(el("p", "desc short", v.description));
+    const actions = el("div", "actions");
+    if (isHttps(v.url)) actions.append(link("open", "Watch ↗", v.url));
+    if (v.transcript) actions.append(copyButton(v, body));
+    if (actions.childNodes.length) body.append(actions);
+    root.append(body);
+  }
+
+  function renderFrames(fm, images) {
+    // get_frames: the images are the result's own image blocks, in the same order as fm.frames.
+    root.className = "frames";
+    root.replaceChildren();
+    // Each frame's image: _meta's data URI (claude.ai strips image blocks from what the
+    // card gets), else the result's own image block in the same position.
+    const shots = (fm.frames || []).map((f, i) => {
+      const block = images[i];
+      const src = isImage(f.image) ? f.image
+        : block && /^image\//.test(block.mimeType || "") ? `data:${block.mimeType};base64,${block.data}` : null;
+      return { ...f, src };
+    }).filter(f => f.src);
+    if (!shots.length) { showError("No frames came back."); return; }
+    root.append(el("p", "title", fm.title || "Video frames"));
+    const meta = el("p", "meta");
+    if (fm.channel) meta.append(el("span", null, fm.channel));
+    meta.append(el("span", null, `${shots.length} frame${shots.length > 1 ? "s" : ""}`));
+    if (fm.platform) meta.append(el("span", null, platformName(fm.platform)));
+    root.append(meta);
+    const src = f => f.src;
+    const viewer = el("div", "viewer"), big = el("img");
+    big.alt = "";
+    viewer.append(big);
+    const caption = el("p", "caption");
+    root.append(viewer, caption);
+    const strip = el("div", "strip");
+    const buttons = shots.map((f, i) => {
+      const b = el("button");
+      b.type = "button";
+      b.setAttribute("aria-label", `Frame at ${duration(f.time)}`);
+      const im = el("img");
+      im.alt = "";
+      im.src = src(f);
+      b.append(im, el("span", "badge", duration(f.time)));
+      b.addEventListener("click", () => show(i));
+      strip.append(b);
+      return b;
+    });
+    function show(i) {
+      const f = shots[i];
+      big.src = src(f);
+      caption.replaceChildren(el("span", null, `Frame at ${duration(f.time)}`));
+      if (isHttps(f.url)) caption.append(link("open", `Open at ${duration(f.time)} ↗`, f.url));
+      buttons.forEach((b, j) => b.setAttribute("aria-current", String(j === i)));
+      reportSize();
+    }
+    big.onload = reportSize;
+    if (shots.length > 1) root.append(strip);
+    show(0);
+  }
+
+  const DOUBT_TEXT = { generic_artist: "Compilation or generic artist", no_links: "No streaming link",
+    credit_disagrees: "Differs from the post's credit", released_after_video: "Released after the video" };
+
+  function trackRow(t, v) {
+    const row = el("li", t.released_after_video ? "track later" : t.doubtful ? "track doubtful" : "track");
+    const fallback = () => el("div", "art note", "♪");
+    if (isHttps(t.artwork)) {
+      const img = el("img", "art");
+      img.alt = "";
+      img.referrerPolicy = "no-referrer";
+      img.onerror = () => img.replaceWith(fallback());
+      img.src = t.artwork;
+      row.append(img);
+    } else {
+      row.append(fallback());
+    }
+    const body = el("div", "body");
+    body.append(el("p", "title", t.title || "Unknown track"));
+    const who = el("p", "meta");
+    if (t.artist) who.append(el("span", null, t.artist));
+    const year = (t.release_date || "").slice(0, 4);
+    if (t.album && t.album !== t.title) who.append(el("span", null, year ? `${t.album} · ${year}` : t.album));
+    else if (year) who.append(el("span", null, year));
+    body.append(who);
+    const actions = el("div", "actions");
+    if (isHttps(t.spotify_url)) actions.append(link("pill", "Spotify ↗", t.spotify_url));
+    if (isHttps(t.apple_music_url))  // the filled button only when there is no Spotify link
+      actions.append(link(isHttps(t.spotify_url) ? "open" : "pill", "Apple Music ↗", t.apple_music_url));
+    if (!t.spotify_url && !t.apple_music_url && isHttps(t.song_link) && !/lis\.tn\/$/.test(t.song_link))
+      actions.append(link("open", "Listen ↗", t.song_link));
+    if (t.spotify_not_found) actions.append(el("span", "flag", "Not on Spotify"));
+    if (typeof t.offset_seconds === "number") {
+      const at = `Heard at ${duration(t.offset_seconds)}`;
+      actions.append(isHttps(v.url) && v.platform === "youtube"
+        ? link("open", `${at} ↗`, atTime(v.url, v.platform, t.offset_seconds)) : el("span", "copied", at));
+    }
+    if (t.released_after_video) actions.append(el("span", "flag", "Later remix or sample"));
+    else if (t.doubtful) {
+      const reasons = (t.doubt_reasons || []).map(r => DOUBT_TEXT[r] || r);
+      actions.append(el("span", "flag", reasons.length ? `Doubtful: ${reasons[0].toLowerCase()}` : "Doubtful"));
+    }
+    body.append(actions);
+    row.append(body);
+    return row;
+  }
+
+  // identify_music: one row per track (album art, title, artist, album · year, when it was
+  // heard), Spotify first as the filled button, Apple Music after it.
+  function renderMusic(mu) {
+    root.className = "music";
+    root.replaceChildren();
+    const v = mu.video || {};
+    const tracks = mu.tracks || [];
+    if (mu.mode === "search") {  // find_on_spotify: candidates, no video
+      const svc = mu.service === "apple_music" ? "Apple Music" : "Spotify";
+      root.append(el("p", "title", mu.query ? `On ${svc}: ${mu.query}` : `On ${svc}`));
+      if (mu.market) {
+        const meta = el("p", "meta");
+        meta.append(el("span", null, mu.market === "any" ? "Any country" : `${mu.market} catalogue`));
+        root.append(meta);
+      }
+      if (!tracks.length) { root.append(el("p", "nomatch", `Nothing found on ${svc}.`)); return; }
+      const list = el("ul", tracks.length > 4 ? "tracks many" : "tracks");
+      tracks.forEach(t => list.append(trackRow(t, {})));
+      root.append(list);
+      return;
+    }
+    root.append(el("p", "title", v.title ? `Music in ${v.title}` : "Music in this video"));
+    if (mu.estimate) {  // a full scan's first call: the cost, nothing scanned yet
+      const e = mu.estimate, meta = el("p", "meta");
+      meta.append(el("span", null, "Full scan not run yet"));
+      if (v.duration) meta.append(el("span", null, duration(v.duration)));
+      if (v.platform) meta.append(el("span", null, platformName(v.platform)));
+      root.append(meta);
+      const left = typeof e.requests_left_this_month === "number" ? ` of ${e.requests_left_this_month} left this month` : "";
+      root.append(el("p", "nomatch", `About ${e.requests} music lookup requests${left} ` +
+        `(≈ $${Number(e.cost_usd_if_over_plan).toFixed(2)} if beyond the plan). Reply yes in the chat to scan.`));
+      if (isHttps(v.url)) root.append(link("open", "Watch ↗", v.url));
+      return;
+    }
+    const meta = el("p", "meta");
+    if (tracks.length) meta.append(el("span", null, mu.mode === "full"
+      ? `${tracks.length} track${tracks.length > 1 ? "s" : ""} found` : "Matched by audio fingerprint"));
+    if (mu.mode === "full") meta.append(el("span", null, "Full scan"));
+    if (v.platform) meta.append(el("span", null, platformName(v.platform)));
+    if (mu.cached) meta.append(el("span", null, "Cached"));
+    root.append(meta);
+    const credited = () => {
+      if (!mu.credited_track) return;
+      root.append(el("p", "credited", "Post credits"));
+      const l = el("ul", "tracks");
+      l.append(trackRow(mu.credited_track, {}));
+      root.append(l);
+    };
+    if (!tracks.length) {
+      root.append(el("p", "nomatch", mu.credited_track ? "No fingerprint match." : mu.notes || "No fingerprint match."));
+      credited();
+      if (isHttps(v.url)) root.append(link("open", "Watch ↗", v.url));
+      return;
+    }
+    const list = el("ul", tracks.length > 4 ? "tracks many" : "tracks");
+    const SHOWN = 8;  // a long mix: the rest behind "Show all"
+    tracks.forEach((t, i) => {
+      const row = trackRow(t, v);
+      if (i >= SHOWN && tracks.length > SHOWN + 2) row.hidden = true;
+      list.append(row);
+    });
+    root.append(list);
+    const hidden = [...list.children].filter(r => r.hidden);
+    if (hidden.length) {
+      const more = el("button", "open", `Show all ${tracks.length} tracks`);
+      more.type = "button";
+      more.style.marginTop = "6px";
+      more.addEventListener("click", () => { hidden.forEach(r => { r.hidden = false; }); more.remove(); reportSize(); });
+      root.append(more);
+    }
+    credited();
+  }
+
+  function showError(text) {
+    root.className = "error";
+    root.textContent = text;
+    reportSize();
+  }
+
+  const atTime = (url, platform, t) =>
+    platform === "youtube" ? `${url}${url.includes("?") ? "&" : "?"}t=${Math.floor(t)}` : url;
+
+  // get_frames without _meta (a host may drop it): rebuild from the content itself, where
+  // each image follows a "Frame at m:ss:" text block and the first text is the heading.
+  function framesFromContent(result) {
+    const content = (result && result.content) || [];
+    const frames = [];
+    content.forEach((c, i) => {
+      const m = c.type === "image" && content[i - 1] && content[i - 1].type === "text" &&
+        /^Frame at ([\d:]+):$/.exec(content[i - 1].text);
+      if (m) frames.push({ time: m[1].split(":").reduce((a, p) => a * 60 + Number(p), 0) });
+    });
+    if (!frames.length) return null;
+    const head = content[0] && content[0].type === "text" ? content[0].text : "";
+    const h = /^(.*) \(([^,]+), (https?:\/\/[^)]+)\): \d+ frame/.exec(head);
+    return { title: h ? h[1] : "Video frames", platform: h ? h[2] : "", url: h ? h[3] : "",
+             frames: frames.map(f => ({ ...f, url: h ? atTime(h[3], h[2], f.time) : "" })) };
+  }
+
+  function onToolResult(result) {
+    const mu = result && !result.isError && result._meta && result._meta.music;
+    if (mu) {
+      renderMusic(mu);
+      reportSize();
+      return;
+    }
+    const fm = (result && result._meta && result._meta.frames) || (result && !result.isError && framesFromContent(result));
+    if (fm && !result.isError) {
+      renderFrames(fm, (result.content || []).filter(c => c.type === "image"));
+      return;
+    }
+    // Video tools send the card its fields in _meta.card (the model reads a slimmer copy
+    // as text); channel_info still uses structuredContent; anything else, the JSON text.
+    let data = (result && result._meta && result._meta.card) || (result && result.structuredContent);
+    if (!data && result && Array.isArray(result.content)) {
+      const text = result.content.find(c => c.type === "text");
+      try { data = text && JSON.parse(text.text); } catch { data = null; }
+    }
+    if (!data || result.isError || data.status === "error") {
+      // get_frames reports errors as plain text ("Error: ..."), not JSON.
+      const text = result && (result.content || []).find(c => c.type === "text");
+      showError((data && data.error) || (text && text.text.replace(/^Error:\s*/, "")) || "Couldn't load this.");
+      return;
+    }
+    if (data.status === "running") {
+      // A long transcription: the card fills in on the get_transcript call that finishes it.
+      const s = data.elapsed_s;
+      showError(`Transcribing${s ? ` (${duration(s)} so far)` : ""}… the video card appears when it's done.`);
+      return;
+    }
+    const image = result._meta && result._meta.image;
+    // video_info results have a title; channel_info results have a name.
+    ("title" in data ? renderVideo : renderChannel)(data, image);
+    reportSize();
+  }
+
+  window.addEventListener("message", ev => {
+    if (ev.source !== window.parent) return;
+    const msg = ev.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.id != null && pending.has(msg.id) && !msg.method) {
+      const { resolve, reject } = pending.get(msg.id);
+      pending.delete(msg.id);
+      msg.error ? reject(msg.error) : resolve(msg.result);
+      return;
+    }
+    switch (msg.method) {
+      case "ui/notifications/tool-result": onToolResult(msg.params); break;
+      case "ui/notifications/host-context-changed": applyContext(msg.params); break;
+      case "ui/resource-teardown": if (msg.id != null) post({ id: msg.id, result: {} }); break;
+      default: if (msg.id != null) post({ id: msg.id, error: { code: -32601, message: "Method not found" } });
+    }
+  });
+
+  request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "transcribe-card", version: "1.1.0" },
+    appCapabilities: {},
+  }).then(res => {
+    applyContext(res && res.hostContext);
+    notify("ui/notifications/initialized", {});
+    reportSize();
+  }).catch(() => showError("This client couldn't start the card."));
+
+  new ResizeObserver(reportSize).observe(document.body);
+})();
+</script>
+</body>
+</html>

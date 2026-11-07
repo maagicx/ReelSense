@@ -1,0 +1,8 @@
+.env
+.env.auth
+cookies.txt
+*.log
+.venv/
+__pycache__/
+*:Zone.Identifier
+cookies/

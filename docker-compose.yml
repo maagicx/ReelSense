@@ -1,0 +1,46 @@
+# ReelSense with Docker Compose. Fill in .env first (see .env.example), then:
+#
+#   docker compose up -d --build                    server only (Tailscale Funnel or your own proxy)
+#   docker compose --profile tunnel up -d --build   server + Cloudflare Tunnel (needs CLOUDFLARE_TUNNEL_TOKEN)
+#
+# Logs: docker compose logs -f reelsense
+# Refresh yt-dlp (do it weekly; platforms break it often):
+#   docker compose build --build-arg YTDLP_BUILD=$(date +%s) && docker compose up -d
+#   (Windows PowerShell: --build-arg YTDLP_BUILD=$(Get-Date -UFormat %s))
+
+services:
+  reelsense:
+    build: .
+    image: reelsense
+    container_name: reelsense
+    env_file: .env
+    environment:
+      # Optional login cookies: put cookies.txt in ./cookies/. No file there is fine.
+      COOKIES_FILE: /cookies/cookies.txt
+    volumes:
+      - reelsense-data:/data        # sign-in state and music cache: keep it
+      - ./cookies:/cookies:ro
+    ports:
+      # Host port, for Tailscale Funnel or a local proxy (Cloudflare Tunnel doesn't need it).
+      # Set HOST_PORT in .env if 8010 is taken on this machine.
+      - "${HOST_PORT:-8010}:8010"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/healthz', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: reelsense-tunnel
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - reelsense
+    restart: unless-stopped
+
+volumes:
+  reelsense-data:

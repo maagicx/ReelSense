@@ -1,0 +1,5 @@
+# yt-dlp is NOT listed here: the Dockerfile installs the nightly on its own layer
+# so update.bat can refresh it without rebuilding anything else.
+fastmcp>=3.4.8,<4
+requests>=2.32
+uvicorn>=0.30
