@@ -44,7 +44,7 @@ MEASURE = [("test video 3:57", {"url": "https://www.youtube.com/watch?v=nknZCJDd
 MUSIC = [
     ("commercial track", {"url": "https://www.youtube.com/watch?v=fmI_Ndrxy14"},  # Imagine Dragons - Warriors
      lambda r: r.get("matched") and "warriors" in (r["tracks"][0].get("title") or "").lower()
-     and r["requests_used"] == 1 and r["tracks"][0].get("spotify_url")),
+     and r["requests_used"] == (0 if r.get("cached") else 1) and r["tracks"][0].get("spotify_url")),
     ("live classical clip", {"url": "https://www.tiktok.com/@reelsclassics.it/video/7699275236725771542"},
      lambda r: "Christian Li" in (r.get("post_credit") or "")),
     ("speech only", {"url": "https://www.youtube.com/watch?v=jNQXAC9IVRw"},

@@ -151,6 +151,13 @@ class Jobs:
             hits.append(now)
             return True
 
+    def refund_slot(self, user: str, bucket: str = "jobs") -> None:
+        """Give back the newest slot, for a call that turned out to cost nothing (a cache hit)."""
+        with self._lock:
+            hits = self._recent(user, bucket, time.time())
+            if hits:
+                hits.pop()
+
     def used(self, user: str, bucket: str = "jobs") -> int:
         """Slots this user has taken in the last hour."""
         with self._lock:
@@ -1022,6 +1029,10 @@ async def identify_music(url: str, ctx: Context, mode: str = "quick",
             break
         except asyncio.TimeoutError:
             await ctx.info(f"identifying music… {int(time.monotonic() - started)}s")
+    if result.get("cached") and not estimate_only:  # no AudD request: don't count it
+        JOBS.refund_slot(uid)
+        if mode == "full":
+            JOBS.refund_slot(uid, "music_full")
     outcome = result["status"] if result.get("status") in ("error", "needs_confirmation") else (
         "cached" if result.get("cached") else f"{len(result['tracks'])} tracks {result['requests_used']} req")
     log.info(f"[mcp] {name} music {mode} {media.platform_of(url)} {outcome} {int((time.time() - t0) * 1000)}ms")
@@ -1161,7 +1172,8 @@ listing Instagram profiles (single Instagram posts and reels work).
 - To copy a whole transcript, use **Copy transcript** on the video card (or expand the tool call). \
 Claude may not paste a creator's full script into the chat.
 - Comments are slower. Comments, frame grabs and music lookups count towards your transcription limit; \
-finding what's on screen counts once, for the transcript and its stills together.
+finding what's on screen counts once, for the transcript and its stills together. A music lookup \
+answered from the cache (a video already identified) doesn't count.
 - A video transcribed once is kept for a week, so asking about it again doesn't transcribe it again.
 - Limits per person per hour: {MAX_JOBS_PER_HOUR} transcriptions, frame grabs, music lookups and \
 comment requests ({MAX_MUSIC_FULL_PER_HOUR} of them full music scans), {MAX_META_CALLS_PER_HOUR} lists, \
