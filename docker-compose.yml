@@ -18,7 +18,7 @@ services:
       # Optional login cookies: put cookies.txt in ./cookies/. No file there is fine.
       COOKIES_FILE: /cookies/cookies.txt
     volumes:
-      - reelsense-data:/data        # sign-in state and music cache: keep it
+      - reelsense-data:/data        # sign-in state, music and transcript caches: keep it
       - ./cookies:/cookies:ro
     ports:
       # Host port, for Tailscale Funnel or a local proxy (Cloudflare Tunnel doesn't need it).
