@@ -27,6 +27,7 @@ Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ─
 | `search_videos` | YouTube keyword search, optionally limited to recent uploads. |
 | `get_comments` | Top comments on a YouTube video. |
 | `get_frames` | Still images at chosen times. |
+| `find_on_screen` | What is on screen when a topic is mentioned: the matching transcript lines, each with a frame from that moment, in one call. |
 | `identify_music` | Names the songs in a video by audio fingerprint (AudD). |
 | `find_on_spotify` / `find_on_apple_music` | Finds a track by name. |
 | `help` | A user guide: what to ask, limits, and usage this hour. |

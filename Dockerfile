@@ -21,7 +21,7 @@ ARG YTDLP_BUILD=0
 RUN echo "yt-dlp build token: $YTDLP_BUILD" \
     && pip install --no-cache-dir -U --pre "yt-dlp[default,curl-cffi]"
 
-COPY server.py media.py deepgram.py consent_page.py signin.py ./
+COPY server.py media.py deepgram.py consent_page.py signin.py pipeline.py transcript_cache.py on_screen.py ./
 COPY music_id/ ./music_id/
 COPY static/ ./static/
 

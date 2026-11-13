@@ -71,6 +71,8 @@
   .viewer img { display: block; max-width: 100%; max-height: 420px; object-fit: contain; }
   .caption { display: flex; gap: 12px; align-items: baseline; margin-top: 6px; color: var(--muted); }
   .caption .open { margin-top: 0; }
+  .said { margin-top: 4px; font-style: italic; }
+  .said:empty { display: none; }
   .strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin-top: 10px; }
   .strip button { all: unset; cursor: pointer; position: relative; border-radius: 6px; overflow: hidden;
     aspect-ratio: 16 / 9; background: #000; outline: 2px solid transparent; outline-offset: -2px; }
@@ -320,22 +322,25 @@
     if (fm.channel) meta.append(el("span", null, fm.channel));
     meta.append(el("span", null, `${shots.length} frame${shots.length > 1 ? "s" : ""}`));
     if (fm.platform) meta.append(el("span", null, platformName(fm.platform)));
+    // find_on_screen: what was searched for, and whether these are matches or a fallback.
+    if (fm.query) meta.append(el("span", null, fm.fallback ? `No match for “${fm.query}”: evenly spaced`
+                                                           : `When “${fm.query}” is mentioned`));
     root.append(meta);
     const src = f => f.src;
     const viewer = el("div", "viewer"), big = el("img");
     big.alt = "";
     viewer.append(big);
-    const caption = el("p", "caption");
-    root.append(viewer, caption);
+    const caption = el("p", "caption"), said = el("p", "said");
+    root.append(viewer, caption, said);
     const strip = el("div", "strip");
     const buttons = shots.map((f, i) => {
       const b = el("button");
       b.type = "button";
-      b.setAttribute("aria-label", `Frame at ${duration(f.time)}`);
+      b.setAttribute("aria-label", `Frame at ${duration(Math.floor(f.time))}`);
       const im = el("img");
       im.alt = "";
       im.src = src(f);
-      b.append(im, el("span", "badge", duration(f.time)));
+      b.append(im, el("span", "badge", duration(Math.floor(f.time))));
       b.addEventListener("click", () => show(i));
       strip.append(b);
       return b;
@@ -343,8 +348,9 @@
     function show(i) {
       const f = shots[i];
       big.src = src(f);
-      caption.replaceChildren(el("span", null, `Frame at ${duration(f.time)}`));
-      if (isHttps(f.url)) caption.append(link("open", `Open at ${duration(f.time)} ↗`, f.url));
+      caption.replaceChildren(el("span", null, `Frame at ${duration(Math.floor(f.time))}`));
+      if (isHttps(f.url)) caption.append(link("open", `Open at ${duration(Math.floor(f.time))} ↗`, f.url));
+      said.textContent = f.text ? `“${f.text}”` : "";
       buttons.forEach((b, j) => b.setAttribute("aria-current", String(j === i)));
       reportSize();
     }
@@ -488,12 +494,16 @@
     const frames = [];
     content.forEach((c, i) => {
       const m = c.type === "image" && content[i - 1] && content[i - 1].type === "text" &&
-        /^Frame at ([\d:]+):$/.exec(content[i - 1].text);
+        /^Frame at ([\d:]+)(?::$|: "| \(fallback)/.exec(content[i - 1].text);
       if (m) frames.push({ time: m[1].split(":").reduce((a, p) => a * 60 + Number(p), 0) });
     });
     if (!frames.length) return null;
     const head = content[0] && content[0].type === "text" ? content[0].text : "";
-    const h = /^(.*) \(([^,]+), (https?:\/\/[^)]+)\): \d+ frame/.exec(head);
+    let h = /^(.*) \(([^,]+), (https?:\/\/[^)]+)\): \d+ frame/.exec(head);
+    if (!h) {  // find_on_screen: the heading is the JSON result
+      try { const j = JSON.parse(head); if (j && j.url) h = [null, j.title || "Video frames", j.platform || "", j.url]; }
+      catch (e) { /* not JSON */ }
+    }
     return { title: h ? h[1] : "Video frames", platform: h ? h[2] : "", url: h ? h[3] : "",
              frames: frames.map(f => ({ ...f, url: h ? atTime(h[3], h[2], f.time) : "" })) };
   }

@@ -46,6 +46,8 @@ import consent_page
 import deepgram
 import media
 import music_id
+import on_screen
+import pipeline
 import signin
 from media import UserError
 from music_id import cache as music_cache
@@ -189,26 +191,12 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
              start: Optional[float] = None, end: Optional[float] = None,
              chapter: Optional[str] = None) -> dict:
     t0 = time.time()
-    meta: dict = {}
+    result: dict = {}
+    cached = False
     try:
-        meta = media.probe(url, jid)
-        duration = meta.get("duration") or 0
-        section = media.resolve_section(meta, start, end, chapter)
-        # The cap is on what gets transcribed, so a section of a long stream is fine.
-        length = ((section["end"] or duration) - section["start"]) if section else duration
-        if length > MAX_DURATION_S:
-            what = "Section" if section else "Video"
-            raise UserError(f"{what} is {_fmt_s(length)}, over the {_fmt_s(MAX_DURATION_S)} limit. "
-                            "Pass start and end (or a chapter) to transcribe part of it.")
-        path = media.download_audio(url, jid, section)
-        transcript = deepgram.transcribe(path, language)
-        if section:
-            # Deepgram times are from the clip's start; shift them to the video's clock.
-            for seg in transcript["segments"]:
-                seg["start"] = round(seg["start"] + section["start"], 2)
-                seg["end"] = round(seg["end"] + section["start"], 2)
-            transcript["section"] = section
-        result = {**meta, **transcript, "status": "done"}
+        result = pipeline.transcribe_cached(url, jid, language, start, end, chapter, MAX_DURATION_S)
+        cached = result.pop("cached", False)
+        result = {**result, "status": "done"}
         JOBS.finish(jid, status="done", result=result)
         return result
     except Exception as exc:
@@ -220,8 +208,9 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
     finally:
         media.cleanup(jid)
         log.info(
-            f"[mcp] {name} transcribe {meta.get('platform', media.platform_of(url))} "
-            f"{meta.get('duration') or 0}s {int((time.time() - t0) * 1000)}ms"
+            f"[mcp] {name} transcribe {result.get('platform', media.platform_of(url))} "
+            f"{result.get('duration') or 0}s{' cached' if cached else ''} "
+            f"{int((time.time() - t0) * 1000)}ms"
         )
 
 
@@ -234,7 +223,10 @@ mcp = FastMCP(
     "transcribe",
     instructions=(
         "Transcribe videos from YouTube, TikTok, Instagram, Facebook, X, Vimeo, news sites "
-        "and anything else yt-dlp supports. Call transcribe_video with the link. "
+        "and anything else yt-dlp supports. Call transcribe_video with the link for questions "
+        "about what is said. For questions about what is visible (account labels, settings, "
+        "prices, charts, slides, code), call find_on_screen instead: one call finds the "
+        "moments the topic is spoken about and returns a frame from each. "
         "When channel details are wanted too, call channel_info first (with the channel or "
         "the video link), then transcribe_video, so the channel card shows above the video. "
         "To name the song or music playing in a video, call identify_music. To get a link "
@@ -420,20 +412,28 @@ async def transcribe_video(url: str, ctx: Context, language: Optional[str] = Non
     jid = JOBS.create(uid)
     fut: Future = POOL.submit(_run_job, jid, name, url, language, start_s, end_s,
                               (chapter or "").strip() or None)
+    result = await _await_job(fut, ctx)
+    if result is None:
+        return {
+            "job_id": jid,
+            "status": "running",
+            "message": "Still transcribing. Call get_transcript with this job_id in a minute.",
+        }
+    return await asyncio.to_thread(_video_result, result, full, segments)
+
+
+async def _await_job(fut: Future, ctx: Context) -> Optional[dict]:
+    """A transcription job's result, or None if it's still running after MAX_WAIT_S. Sends
+    a progress line every HEARTBEAT_S meanwhile, to keep the connection alive."""
     waiter = asyncio.wrap_future(fut)
     started = time.monotonic()
     deadline = started + MAX_WAIT_S
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return {
-                "job_id": jid,
-                "status": "running",
-                "message": "Still transcribing. Call get_transcript with this job_id in a minute.",
-            }
+            return None
         try:
-            result = await asyncio.wait_for(asyncio.shield(waiter), min(HEARTBEAT_S, remaining))
-            return await asyncio.to_thread(_video_result, result, full, segments)
+            return await asyncio.wait_for(asyncio.shield(waiter), min(HEARTBEAT_S, remaining))
         except asyncio.TimeoutError:
             await ctx.info(f"transcribing… {int(time.monotonic() - started)}s")
 
@@ -546,7 +546,8 @@ def _at_time(url: str, t: float) -> str:
     "slides, on-screen text, charts, products or people that the transcript doesn't "
     f"describe. Up to {media.MAX_FRAMES} per call, longest side {media.FRAME_WIDTH} px (each "
     "image is roughly 450 tokens). Pick moments from transcript segment times or chapters. "
-    "Each call uses one transcription slot of the hourly limit."))
+    "Each call uses one transcription slot of the hourly limit. If you're picking times "
+    "based on speech, use find_on_screen instead."))
 async def get_frames(url: str, timestamps: list[str | float]) -> ToolResult:
     try:
         times = sorted({media.parse_time(t) for t in timestamps if media.parse_time(t) is not None})
@@ -581,6 +582,95 @@ async def get_frames(url: str, timestamps: list[str | float]) -> ToolResult:
     card = {"title": meta.get("title"), "channel": meta.get("channel"), "url": video_url,
             "platform": meta.get("platform"), "duration": meta.get("duration"),
             "frames": [{"time": t, "url": _at_time(video_url, t),
+                        "image": f"data:image/jpeg;base64,{base64.b64encode(jpg).decode()}"}
+                       for t, jpg in grabbed]}
+    return ToolResult(content=content, meta={"frames": card})
+
+
+FALLBACK_TRANSCRIPT_CHARS = 4000
+
+
+@mcp.tool(app=CARD_APP, description=(
+    "Find what is on screen when a topic is mentioned in a video. Use this whenever a question "
+    "about a video depends on visible detail (account labels, settings, prices, charts, slides, "
+    "code) rather than only on what is said. Transcribes, finds the moments the query is spoken "
+    "about, and returns those transcript lines with a frame from each moment. `query` is the "
+    "topic in a few words (e.g. \"paper trading account\"); matching is by keyword, so use words "
+    "the speaker would say. Up to 10 frames (max_frames, default 5), each taken `offset` seconds "
+    "(default 1) after the line starts, since what's shown often lags the speech. If nothing "
+    "matches, says so, returns the transcript and evenly spaced frames instead (fallback: true): "
+    "retry with other words, or use get_frames at times you pick from the transcript. Same "
+    "platforms as transcribe_video; a video already transcribed isn't transcribed again. Each "
+    "call uses one transcription slot of the hourly limit."))
+async def find_on_screen(url: str, query: str, ctx: Context, max_frames: int = 5,
+                         offset: float = 1.0) -> ToolResult:
+    def error(msg: str) -> ToolResult:
+        return ToolResult(content=[TextContent(type="text", text=f"Error: {msg}")], is_error=True)
+
+    query = (query or "").strip()[:200]
+    if not query:
+        return error("query is empty: say what to look for, e.g. \"pricing table\".")
+    try:
+        max_frames = max(1, min(int(max_frames), media.MAX_FRAMES, 10))
+        offset = max(0.0, float(offset))
+    except (TypeError, ValueError):
+        return error("max_frames must be a whole number and offset a number of seconds.")
+    (uid, name), t0 = _caller(), time.time()
+    if not JOBS.take_slot(uid):  # one slot for transcript and frames together
+        return error(f"limit of {MAX_JOBS_PER_HOUR} transcriptions per hour reached.")
+    jid = JOBS.create(uid)
+    result = await _await_job(POOL.submit(_run_job, jid, name, url, None), ctx)
+    if result is None:
+        text = json.dumps({"job_id": jid, "status": "running", "message": (
+            "Still transcribing (a long video). Call find_on_screen again with the same arguments "
+            "in a minute: the transcript is kept, so it won't be transcribed again.")})
+        return ToolResult(content=[TextContent(type="text", text=text)])
+    if result.get("status") == "error":
+        return error(result["error"])
+
+    segments = result.get("segments") or []
+    duration = result.get("duration") or (segments[-1]["end"] if segments else None)
+    matches, fallback = on_screen.find(query, segments, duration, max_frames, offset)
+    times = [m["frame_time"] for m in matches] or on_screen.fallback_times(duration, max_frames)
+    tag = f"os-{uuid.uuid4().hex[:8]}"
+    try:
+        frame_meta, grabbed = await asyncio.to_thread(media.frames, url, times, tag)
+    except UserError as exc:
+        log.info(f"[mcp] {name} on_screen {result.get('platform')} frames error {int((time.time() - t0) * 1000)}ms")
+        return error(str(exc))
+    finally:
+        await asyncio.to_thread(media.cleanup, tag)
+
+    view = _model_view(result)
+    transcript_lines = view.pop("transcript", "")
+    view.pop("segments", None)
+    view.pop("status", None)
+    view.update(query=query, matches=matches, fallback=fallback)
+    if fallback and not segments:
+        view["note"] = ("No speech in this video, so there was nothing to match. The frames below "
+                        "are evenly spaced through the video, not tied to the query.")
+    elif fallback:
+        view["note"] = (f"No transcript lines matched {query!r}. The frames below are evenly spaced "
+                        "through the video, not tied to the query. Check the transcript for other "
+                        "words to search for, or call get_frames at times you pick from it.")
+        view["transcript"] = media.clip(transcript_lines, FALLBACK_TRANSCRIPT_CHARS)
+    by_time = {m["frame_time"]: m["text"] for m in matches}
+    content: list = [TextContent(type="text", text=json.dumps(view, ensure_ascii=False, separators=(",", ":")))]
+    for t, jpg in grabbed:
+        said = by_time.get(round(t, 2))
+        label = (f"Frame at {media._clock(t)}: \"{media.clip(said, 300)}\"" if said
+                 else f"Frame at {media._clock(t)} (fallback, evenly spaced):")
+        content.append(TextContent(type="text", text=label))
+        content.append(Image(data=jpg, format="jpeg").to_image_content())
+    log.info(f"[mcp] {name} on_screen {result.get('platform')} "
+             f"{'fallback' if fallback else f'{len(matches)} matches'} {len(grabbed)} frames "
+             f"{int((time.time() - t0) * 1000)}ms")
+    video_url = frame_meta.get("url") or result.get("url") or url
+    card = {"title": result.get("title"), "channel": result.get("channel"), "url": video_url,
+            "platform": result.get("platform"), "duration": result.get("duration"),
+            "query": query, "fallback": fallback,
+            "frames": [{"time": t, "url": _at_time(video_url, t),
+                        **({"text": by_time[round(t, 2)]} if round(t, 2) in by_time else {}),
                         "image": f"data:image/jpeg;base64,{base64.b64encode(jpg).decode()}"}
                        for t, jpg in grabbed]}
     return ToolResult(content=content, meta={"frames": card})
@@ -1026,6 +1116,13 @@ on-screen text or charts the speech doesn't cover. Claude reads them, and in Cla
 a gallery with "Open at" links to that moment.
 - "Show me the slide at 12:30 in <link>" or "Grab frames at the start of each chapter of <link>"
 
+**Find what's on screen when something is mentioned.** One step: Claude transcribes the video, \
+finds the moments a topic is talked about and shows a still from each, with the line being said. \
+For details you have to see: account names, settings, prices, charts, slides, code.
+- "Which account is on screen when they talk about paper trading? <link>"
+- "Show me the pricing slide from <link>"
+- If the topic is never said, Claude tells you and shows evenly spaced stills instead.
+
 **Identify the music.** Names the song or recording playing in a video by its audio \
 fingerprint, with a Spotify link, and shows what the post itself credits so Claude can compare.
 - "What song is playing in <link>?" or "Who performs the music at 0:45 in <link>?"
@@ -1051,7 +1148,9 @@ listing Instagram profiles (single Instagram posts and reels work).
 - Transcripts come from speech recognition (Deepgram), so names and jargon can be misspelled.
 - To copy a whole transcript, use **Copy transcript** on the video card (or expand the tool call). \
 Claude may not paste a creator's full script into the chat.
-- Comments are slower. Comments, frame grabs and music lookups count towards your transcription limit.
+- Comments are slower. Comments, frame grabs and music lookups count towards your transcription limit; \
+finding what's on screen counts once, for the transcript and its stills together.
+- A video transcribed once is kept for a week, so asking about it again doesn't transcribe it again.
 - Limits per person per hour: {MAX_JOBS_PER_HOUR} transcriptions, frame grabs, music lookups and \
 comment requests ({MAX_MUSIC_FULL_PER_HOUR} of them full music scans), {MAX_META_CALLS_PER_HOUR} lists, \
 searches and channel lookups, {MAX_SPOTIFY_PER_HOUR} Spotify searches and {MAX_SPOTIFY_PER_HOUR} \

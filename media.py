@@ -7,6 +7,7 @@ import base64
 import glob
 import html
 import json
+import logging
 import math
 import os
 import re
@@ -18,6 +19,8 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 
 import requests
 import yt_dlp
+
+log = logging.getLogger("transcribe-mcp")
 
 TMP = os.environ.get("TMP_DIR", "/tmp")
 COOKIES_FILE = os.environ.get("COOKIES_FILE") or None
@@ -802,4 +805,6 @@ def humanise(exc: Exception) -> UserError:
     for needles, friendly in _ERROR_RULES:
         if any(n in msg for n in needles):
             return UserError(friendly)
+    # Not a known cause: keep yt-dlp's own words in the log, or nobody can tell what broke.
+    log.warning(f"[yt-dlp] unrecognised error: {str(exc)[:500]}")
     return UserError("Download failed. The platform may be blocking requests; try again later.")
