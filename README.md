@@ -27,7 +27,7 @@ Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ─
 | `search_videos` | YouTube keyword search, optionally limited to recent uploads. |
 | `get_comments` | Top comments on a YouTube video. |
 | `get_frames` | Still images at chosen times. |
-| `find_on_screen` | What is on screen when a topic is mentioned: the matching transcript lines, each with a frame from that moment, in one call. |
+| `find_on_screen` | What is on screen when a topic is mentioned: the matching transcript lines, each with a frame from that moment, in one call. Matches by keyword, or also by meaning with a `VOYAGE_API_KEY`. |
 | `identify_music` | Names the songs in a video by audio fingerprint (AudD). |
 | `find_on_spotify` / `find_on_apple_music` | Finds a track by name. |
 | `help` | A user guide: what to ask, limits, and usage this hour. |
@@ -39,7 +39,7 @@ Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ─
 - **A [Deepgram](https://console.deepgram.com) API key** for transcription. New accounts get free credit.
 - **A Google account** for sign-in. GitHub, any OpenID Connect provider or Microsoft Entra ID work too.
 - **A public https address**: your own domain on Cloudflare, or a free Tailscale address if you have no domain (step 2).
-- Optional: an [AudD](https://dashboard.audd.io) token (music identification) and a [Spotify app](https://developer.spotify.com/dashboard) (Spotify links).
+- Optional: an [AudD](https://dashboard.audd.io) token (music identification), a [Spotify app](https://developer.spotify.com/dashboard) (Spotify links) and a [Voyage AI](https://dashboard.voyageai.com) key (`find_on_screen` matching by meaning; the first 200M tokens are free).
 
 ## Deploy
 

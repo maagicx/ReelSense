@@ -10,6 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import embeddings  # noqa: E402
 import on_screen  # noqa: E402
 import pipeline  # noqa: E402
 import transcript_cache  # noqa: E402
@@ -148,6 +149,94 @@ class CachedTranscriptReuse(unittest.TestCase):
             again = pipeline.transcribe_cached("u", "t2")
         self.assertEqual(dg.call_count, 2)
         self.assertNotIn("cached", again)
+
+
+# Fake embeddings: each text points along the "meaning" axes its words belong to; text
+# with none of them gets an axis of its own, so it is unrelated to everything else.
+AXES = {"elephant": 0, "trunk": 0, "pump": 0, "pric": 1, "cost": 1, "£": 1, "weather": 2}
+
+
+def fake_vec(text):
+    v = [0.0, 0.0, 0.0, 0.0]
+    for word, axis in AXES.items():
+        if word in text.lower():
+            v[axis] = 1.0
+    if not any(v):
+        v[3] = 1.0
+    n = sum(x * x for x in v) ** 0.5
+    return [x / n for x in v]
+
+
+ZOO = [seg(1.0, 4.0, "So here we are, one of the elephants."),
+       seg(5.0, 9.0, "They have really long pumps."),
+       seg(12.0, 14.0, "It costs £49 a month to visit."),
+       seg(20.0, 22.0, "Nice weather today.")]
+
+
+class HybridMatching(unittest.TestCase):
+    def matcher(self, **kw):
+        return on_screen.HybridMatcher(fake_vec, lambda texts: [fake_vec(t) for t in texts], **kw)
+
+    def test_meaning_finds_what_keywords_miss(self):
+        self.assertEqual(on_screen.KeywordMatcher().match("pricing", ZOO), [])
+        matches, fallback = on_screen.find("pricing", ZOO, 30, 5, 1.0, self.matcher())
+        self.assertFalse(fallback)
+        self.assertEqual([m["start"] for m in matches], [12.0])
+
+    def test_misheard_word(self):
+        matches, _ = on_screen.find("trunks", ZOO, 30, 5, 1.0, self.matcher())
+        # The "pumps" line is found (merged with the elephants line 1 s before it).
+        self.assertTrue(any("pumps" in m["text"] for m in matches))
+        self.assertNotIn(12.0, [m["start"] for m in matches])
+
+    def test_unrelated_query_falls_back(self):
+        _, fallback = on_screen.find("submarine", ZOO, 30, 5, 1.0, self.matcher())
+        self.assertTrue(fallback)
+
+    def test_keyword_hit_ranks_above_meaning_only(self):
+        hits = dict(self.matcher().match("elephants", ZOO))
+        self.assertGreater(hits[0], hits[1])  # says "elephants" vs only means it
+
+    def test_embedding_failure_falls_back_to_keywords(self):
+        def broken(_):
+            raise embeddings.EmbeddingError("Voyage HTTP 500")
+        m = on_screen.HybridMatcher(broken, broken)
+        matches, fallback = on_screen.find("weather", ZOO, 30, 5, 1.0, m)
+        self.assertFalse(fallback)
+        self.assertEqual([x["start"] for x in matches], [20.0])
+        _, fallback = on_screen.find("pricing", ZOO, 30, 5, 1.0, m)
+        self.assertTrue(fallback)
+
+
+class EmbeddingCache(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = mock.patch.object(transcript_cache, "PATH", os.path.join(self.tmp.name, "t.sqlite"))
+        self.path.start()
+
+    def tearDown(self):
+        self.path.stop()
+        self.tmp.cleanup()
+
+    def test_lines_embedded_once(self):
+        def fake_post(url, json, **kw):
+            resp = mock.Mock(status_code=200)
+            resp.json.return_value = {"data": [{"index": i, "embedding": [3.0, 4.0]} for i in range(len(json["input"]))],
+                                      "usage": {"total_tokens": 7}}
+            return resp
+        with mock.patch.object(embeddings.requests, "post", side_effect=fake_post) as post:
+            first = embeddings.embed_lines(["a", "b"])
+            second = embeddings.embed_lines(["a", "b"])
+            embeddings.embed_lines(["a", "c"])  # different transcript: embedded again
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["input_type"], "document")
+        self.assertAlmostEqual(first[0][0], 0.6, places=5)  # normalised
+        self.assertEqual([[round(x, 5) for x in v] for v in second], [[0.6, 0.8], [0.6, 0.8]])
+
+    def test_http_error_raises(self):
+        with mock.patch.object(embeddings.requests, "post", return_value=mock.Mock(status_code=401, text="bad key")):
+            with self.assertRaises(embeddings.EmbeddingError):
+                embeddings.embed_query("x")
 
 
 if __name__ == "__main__":

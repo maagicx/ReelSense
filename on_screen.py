@@ -1,10 +1,15 @@
 """find_on_screen's logic: which transcript lines a query is about, merged into moments,
-and when in each moment to take a frame. Pure functions, no I/O.
+and when in each moment to take a frame. No I/O of its own: the embedding matcher is
+handed the functions that fetch embeddings.
 
-Matching sits behind Matcher so an embedding-based one can replace KeywordMatcher later
-without touching the rest: set MATCHER."""
+Matching sits behind Matcher: KeywordMatcher (words, stemmed) and HybridMatcher (meaning
+by embeddings, plus the keyword score, falling back to keywords alone when embeddings
+fail). find() takes the matcher to use; MATCHER is the default."""
+import logging
 import re
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
+
+log = logging.getLogger("transcribe-mcp")
 
 MERGE_GAP_S = 3.0  # matching lines this close together are one moment
 END_MARGIN_S = 0.5  # media.frames refuses a time at or past the end
@@ -70,6 +75,43 @@ class KeywordMatcher:
             if len(want) > 1 and f" {phrase} " in f" {' '.join(have)} ":
                 score += 1.0
             hits.append((i, round(score, 3)))
+        return hits
+
+
+class HybridMatcher:
+    """Meaning first: cosine similarity between the query's embedding and each line's,
+    so "trunks" can find "long pumps" (a mishearing) and "pricing" finds "£49 a month".
+    A line counts if its similarity is at least min_score and within margin of the best
+    line's, or if it matches by keyword. Score = similarity + keyword score, so a line
+    that says the words outranks one that only means them. Any embedding failure falls
+    back to KeywordMatcher, logged."""
+
+    def __init__(self, embed_query: Callable[[str], list[float]],
+                 embed_lines: Callable[[list[str]], list[list[float]]],
+                 min_score: float = 0.45, margin: float = 0.15,
+                 keyword: Optional[Matcher] = None) -> None:
+        self.embed_query, self.embed_lines = embed_query, embed_lines
+        self.min_score, self.margin = min_score, margin
+        self.keyword = keyword or KeywordMatcher()
+
+    def match(self, query: str, segments: list[dict]) -> list[tuple[int, float]]:
+        by_keyword = dict(self.keyword.match(query, segments))
+        if not segments:
+            return []
+        try:
+            q = self.embed_query(query)
+            lines = self.embed_lines([(s.get("text") or "").strip() for s in segments])
+        except Exception as exc:  # any failure: keywords alone, the tool still answers
+            log.warning(f"[embed] falling back to keywords: {exc}")
+            return list(by_keyword.items())
+        sims = [sum(a * b for a, b in zip(q, v)) for v in lines]
+        best = max(sims)
+        floor = max(self.min_score, best - self.margin)
+        log.info(f"[embed] query {query!r}: best similarity {best:.3f}, floor {floor:.3f}")
+        hits = []
+        for i, sim in enumerate(sims):
+            if sim >= floor or i in by_keyword:
+                hits.append((i, round(sim + by_keyword.get(i, 0.0), 3)))
         return hits
 
 

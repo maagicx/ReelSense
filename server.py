@@ -44,6 +44,7 @@ from starlette.responses import FileResponse, HTMLResponse, PlainTextResponse
 
 import consent_page
 import deepgram
+import embeddings
 import media
 import music_id
 import on_screen
@@ -588,6 +589,14 @@ async def get_frames(url: str, timestamps: list[str | float]) -> ToolResult:
 
 
 FALLBACK_TRANSCRIPT_CHARS = 4000
+# With a Voyage key, find_on_screen matches by meaning as well as by keyword. The floor is
+# the lowest cosine similarity that counts; [embed] log lines show the best per query, for tuning.
+EMBED_MIN_SCORE = float(os.environ.get("EMBED_MIN_SCORE") or 0.45)
+ON_SCREEN_MATCHER = (on_screen.HybridMatcher(embeddings.embed_query, embeddings.embed_lines, EMBED_MIN_SCORE)
+                     if embeddings.configured() else on_screen.KeywordMatcher())
+MATCH_METHOD = "meaning+keyword" if embeddings.configured() else "keyword"
+MATCH_HINT = ("matching is by meaning as well as keywords, so describe the topic naturally"
+              if embeddings.configured() else "matching is by keyword, so use words the speaker would say")
 
 
 @mcp.tool(app=CARD_APP, description=(
@@ -595,8 +604,7 @@ FALLBACK_TRANSCRIPT_CHARS = 4000
     "about a video depends on visible detail (account labels, settings, prices, charts, slides, "
     "code) rather than only on what is said. Transcribes, finds the moments the query is spoken "
     "about, and returns those transcript lines with a frame from each moment. `query` is the "
-    "topic in a few words (e.g. \"paper trading account\"); matching is by keyword, so use words "
-    "the speaker would say. Up to 10 frames (max_frames, default 5), each taken `offset` seconds "
+    "topic in a few words (e.g. \"paper trading account\"); " + MATCH_HINT + ". Up to 10 frames (max_frames, default 5), each taken `offset` seconds "
     "(default 1) after the line starts, since what's shown often lags the speech. If nothing "
     "matches, says so, returns the transcript and evenly spaced frames instead (fallback: true): "
     "retry with other words, or use get_frames at times you pick from the transcript. Same "
@@ -630,7 +638,8 @@ async def find_on_screen(url: str, query: str, ctx: Context, max_frames: int = 5
 
     segments = result.get("segments") or []
     duration = result.get("duration") or (segments[-1]["end"] if segments else None)
-    matches, fallback = on_screen.find(query, segments, duration, max_frames, offset)
+    matches, fallback = await asyncio.to_thread(
+        on_screen.find, query, segments, duration, max_frames, offset, ON_SCREEN_MATCHER)
     times = [m["frame_time"] for m in matches] or on_screen.fallback_times(duration, max_frames)
     tag = f"os-{uuid.uuid4().hex[:8]}"
     try:
@@ -645,7 +654,7 @@ async def find_on_screen(url: str, query: str, ctx: Context, max_frames: int = 5
     transcript_lines = view.pop("transcript", "")
     view.pop("segments", None)
     view.pop("status", None)
-    view.update(query=query, matches=matches, fallback=fallback)
+    view.update(query=query, match_method=MATCH_METHOD, matches=matches, fallback=fallback)
     if fallback and not segments:
         view["note"] = ("No speech in this video, so there was nothing to match. The frames below "
                         "are evenly spaced through the video, not tied to the query.")
@@ -1078,6 +1087,9 @@ async def _track_search(service: str, query: Optional[str], artist: Optional[str
                                       "query": label, "tracks": tracks}})
 
 
+MEANING_HELP = ("- It finds the topic even when it's said in other words (\"pricing\" finds \"it costs £49 a "
+                "month\", and misheard words often still match).\n" if embeddings.configured() else "")
+
 HELP = f"""\
 # ReelSense: what you can ask
 
@@ -1121,7 +1133,7 @@ finds the moments a topic is talked about and shows a still from each, with the 
 For details you have to see: account names, settings, prices, charts, slides, code.
 - "Which account is on screen when they talk about paper trading? <link>"
 - "Show me the pricing slide from <link>"
-- If the topic is never said, Claude tells you and shows evenly spaced stills instead.
+{MEANING_HELP}- If the topic is never said, Claude tells you and shows evenly spaced stills instead.
 
 **Identify the music.** Names the song or recording playing in a video by its audio \
 fingerprint, with a Spotify link, and shows what the post itself credits so Claude can compare.
@@ -1196,6 +1208,9 @@ def health() -> dict:
         "impersonation": IMPERSONATION,
         "cookies": bool(media.COOKIES_FILE and os.path.exists(media.COOKIES_FILE)),
         "music_id": _music_status(),
+        "find_on_screen_matching": ({"method": MATCH_METHOD, "model": embeddings.MODEL,
+                                     "min_score": EMBED_MIN_SCORE} if embeddings.configured()
+                                    else {"method": MATCH_METHOD}),
     }
 
 
