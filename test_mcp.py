@@ -24,6 +24,7 @@ import time
 
 import requests
 from fastmcp import Client
+from fastmcp.client import oauth_callback
 from fastmcp.client.transports import StreamableHttpTransport
 
 TOOLS = ["channel_info", "find_on_apple_music", "find_on_screen", "find_on_spotify", "get_comments", "get_frames", "get_transcript", "health", "help", "identify_music",
@@ -264,10 +265,18 @@ async def music(base: str) -> int:
     return failures
 
 
+def brand_signin_page(base: str) -> None:
+    """Show the ReelSense icon, not FastMCP's, on the local "Authentication successful" page."""
+    logo, page = oauth_callback.create_logo, oauth_callback.create_callback_html
+    oauth_callback.create_logo = lambda *a, **k: logo(f"{base.rstrip('/')}/icon.svg", "ReelSense")
+    oauth_callback.create_callback_html = lambda *a, **k: page(*a, **{**k, "title": "ReelSense"})
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) != 1:
         sys.exit(__doc__)
+    brand_signin_page(args[0])
     if "--measure" in sys.argv:
         failed = asyncio.run(measure(args[0]))
     elif "--music" in sys.argv:
