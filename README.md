@@ -33,6 +33,52 @@ Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ─
 | `help` | A user guide: what to ask, limits, and usage this hour. |
 | `health` | Versions, settings and who you're signed in as. |
 
+## Screenshots
+
+In claude.ai, each prompt was asked in a new chat:
+
+<table>
+<tr>
+<td width="50%"><b>Transcript and video card</b><br><i>"Who made this video and what do they say?"</i><br><img src="docs/images/claude-video-card.png" alt="Video card and transcript summary in claude.ai"></td>
+<td width="50%"><b>A TikTok, with frames</b><br><i>"Summarise this TikTok"</i><br><img src="docs/images/claude-tiktok-frames.png" alt="TikTok video card and frame gallery in claude.ai"></td>
+</tr>
+<tr>
+<td><b>Frames from a talk with slides</b><br><i>"Show me what's on screen at 0:40, 3:20 and 5:45"</i><br><img src="docs/images/claude-frames-slides.png" alt="Frame gallery of slides in claude.ai"></td>
+<td><b>Frames on request</b><br><i>"Show me the elephants in this video"</i><br><img src="docs/images/claude-frames-zoo.png" alt="Frame gallery from Me at the zoo in claude.ai"></td>
+</tr>
+<tr>
+<td><b>Name the song</b><br><i>"What song is playing in this video?"</i><br><img src="docs/images/claude-identify-music.png" alt="Music card with Spotify and Apple Music links in claude.ai"></td>
+<td><b>Every song in a mix</b><br><i>"List every song in this mix"</i><br><img src="docs/images/claude-music-full-scan.png" alt="Full-scan music card listing tracks with timestamps in claude.ai"></td>
+</tr>
+<tr>
+<td><b>An Instagram reel</b><br><i>"What does this post say?"</i><br><img src="docs/images/claude-instagram.png" alt="Instagram reel card and summary in claude.ai"></td>
+<td><b>A Spotify link by name</b><br><i>"Give me a Spotify link for Bohemian Rhapsody by Queen"</i><br><img src="docs/images/claude-find-on-spotify.png" alt="Spotify search card in claude.ai"></td>
+</tr>
+<tr>
+<td><b>A channel's most popular videos</b><br><i>"What are the 5 most popular videos on NASA's YouTube channel?"</i><br><img src="docs/images/claude-list-videos.png" alt="List of NASA's most viewed videos in claude.ai"></td>
+<td><b>Recent uploads on a topic</b><br><i>"Find YouTube videos uploaded this month about the Artemis programme"</i><br><img src="docs/images/claude-search-videos.png" alt="Table of recent Artemis videos in claude.ai"></td>
+</tr>
+</table>
+
+<details>
+<summary><b>The same cards in OpenAI's Codex app, and Claude Code in a terminal</b></summary>
+
+<table>
+<tr>
+<td width="50%"><b>Video card</b> (Codex)<br><img src="docs/images/codex-video-card.png" alt="Video card in the Codex app"></td>
+<td width="50%"><b>Music card</b> (Codex)<br><img src="docs/images/codex-identify-music.png" alt="Music card in the Codex app"></td>
+</tr>
+<tr>
+<td><b>Frames from slides</b> (Codex)<br><img src="docs/images/codex-frames-slides.png" alt="Frame gallery of slides in the Codex app"></td>
+<td><b>Frames on request</b> (Codex)<br><img src="docs/images/codex-frames-zoo.png" alt="A frame from Me at the zoo in the Codex app"></td>
+</tr>
+<tr>
+<td><b><code>find_on_screen</code> with no match</b> (Codex): evenly spaced frames instead<br><img src="docs/images/codex-find-on-screen-fallback.png" alt="find_on_screen fallback frames in the Codex app"></td>
+<td><b>Claude Code</b><br><i>"Transcribe … and list the key points"</i><br><img src="docs/images/claude-code-transcript.png" alt="Transcript and key points in Claude Code"></td>
+</tr>
+</table>
+</details>
+
 ## What you need
 
 - **A computer that stays on**, with [Docker](https://docs.docker.com/get-docker/) (Docker Desktop on Windows or Mac). A home or office connection works best: video platforms often block data-centre IP addresses.
