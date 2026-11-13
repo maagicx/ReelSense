@@ -177,7 +177,7 @@ Then try: *"Transcribe https://www.youtube.com/watch?v=… and summarise it."* I
 ## Keep it running
 
 - **Update ReelSense:** `git pull`, then the same `docker compose … up -d --build` command as in step 5.
-- **Refresh yt-dlp weekly.** Platforms break it often. Run `docker compose build --build-arg YTDLP_BUILD=$(date +%s)`, then `docker compose up -d`. Windows users of the scripts can schedule `update.bat` instead, which also rolls back a bad build.
+- **Refresh yt-dlp weekly.** Platforms break it often; an `HTTP Error 403` in the `[yt-dlp]` log lines is the usual sign. Run `docker compose build --build-arg YTDLP_BUILD=$(date +%s)`, then `docker compose up -d`. Windows users of the scripts can schedule `update.bat` instead, which also rolls back a bad build.
 - **Users:** edit `ALLOWED_USERS`, then run `docker compose up -d`. Compose recreates the container when `.env` changes.
 
 ## Limits and costs
