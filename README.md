@@ -174,6 +174,11 @@ On Windows you can also use the scripts instead of Compose: `build.bat`, then `r
 
 Then try: *"Transcribe https://www.youtube.com/watch?v=… and summarise it."* If every tool says "Not authorised", the account you signed in with isn't in `ALLOWED_USERS`.
 
+## Testing
+
+- **Unit tests**, no network or keys: `python -m unittest discover tests`.
+- **End-to-end**, against your running server: `pip install -r requirements.txt`, then `python test_mcp.py https://mcp.example.com`. It opens a browser to sign in the first time, then calls every tool on short public videos and prints `OK` or the number of failures. It uses real Deepgram minutes and frame grabs. `--quick` skips transcription, `--measure` prints how much text each tool returns, and `--music` runs the `identify_music` checks (about 60 AudD requests the first time, then cached).
+
 ## Keep it running
 
 - **Update ReelSense:** `git pull`, then the same `docker compose … up -d --build` command as in step 5.
