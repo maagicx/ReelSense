@@ -94,7 +94,8 @@ exit /b 1
 docker rm -f transcribe-mcp >nul 2>&1
 set COOKIE_ARG=
 if exist cookies.txt set COOKIE_ARG=-v "%~dp0cookies.txt:/cookies/cookies.txt:ro" -e COOKIES_FILE=/cookies/cookies.txt
-docker run -d --name transcribe-mcp --env-file .env %COOKIE_ARG% -v transcribe-mcp-data:/data -p 8010:8010 --restart unless-stopped transcribe-mcp >>"%LOG%" 2>&1
+docker network create reelsense >nul 2>&1
+docker run -d --name transcribe-mcp --network reelsense --env-file .env %COOKIE_ARG% -v transcribe-mcp-data:/data -p 127.0.0.1:8010:8010 --restart unless-stopped transcribe-mcp >>"%LOG%" 2>&1
 exit /b %errorlevel%
 
 :log

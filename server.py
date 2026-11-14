@@ -89,6 +89,10 @@ MUSIC_MISS_TTL_S = 7 * 86400  # shorter: the catalogue grows, a miss may match l
 IMPERSONATION = importlib.util.find_spec("curl_cffi") is not None
 HEARTBEAT_S = 20  # keep bytes flowing: Cloudflare drops responses idle for 100 s
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()]
+# Proxies whose X-Forwarded-For/-Proto are believed: by default only private addresses,
+# which is where a tunnel or proxy container (or Docker's port forward) connects from.
+FORWARDED_ALLOW_IPS = os.environ.get(
+    "FORWARDED_ALLOW_IPS", "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7").strip()
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 MCP_JWT_SIGNING_KEY = os.environ.get("MCP_JWT_SIGNING_KEY", "").strip()
 # Where MCP clients may be sent back after sign-in: claude.ai, ChatGPT (one path per
@@ -1273,7 +1277,9 @@ async def home(_: Request) -> HTMLResponse:
 
 
 def build_app():
-    hosts = ALLOWED_HOSTS + ["localhost", "127.0.0.1", "host.docker.internal"]
+    # Plus the names a tunnel container on the same Docker network may use (README, tunnel.bat).
+    hosts = ALLOWED_HOSTS + ["localhost", "127.0.0.1", "host.docker.internal",
+                             "transcribe-mcp", "transcribe-mcp-auth", "reelsense"]
     return mcp.http_app(path="/mcp", stateless_http=True, allowed_hosts=hosts)
 
 
@@ -1282,4 +1288,4 @@ if __name__ == "__main__":
              f"allowlist={'on' if signin.gate_on() else 'off'} model={deepgram.MODEL} "
              f"yt-dlp={yt_dlp.version.__version__}")
     uvicorn.run(build_app(), host="0.0.0.0", port=PORT, log_level="warning", proxy_headers=True,
-                forwarded_allow_ips="*")
+                forwarded_allow_ips=FORWARDED_ALLOW_IPS)

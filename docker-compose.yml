@@ -22,8 +22,10 @@ services:
       - ./cookies:/cookies:ro
     ports:
       # Host port, for Tailscale Funnel or a local proxy (Cloudflare Tunnel doesn't need it).
-      # Set HOST_PORT in .env if 8010 is taken on this machine.
-      - "${HOST_PORT:-8010}:8010"
+      # Bound to this machine only, so the LAN can't skip your tunnel or proxy. Set
+      # HOST_PORT in .env if 8010 is taken; HOST_BIND=0.0.0.0 if a proxy on another
+      # machine has to reach it.
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8010}:8010"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/healthz', timeout=5)"]
@@ -32,7 +34,7 @@ services:
       retries: 3
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.11.0   # pinned: bump to update
     container_name: reelsense-tunnel
     profiles: ["tunnel"]
     command: tunnel --no-autoupdate run
