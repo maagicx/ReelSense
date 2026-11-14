@@ -4,8 +4,9 @@ setlocal enabledelayedexpansion
 :: Weekly yt-dlp refresh for the transcribe-mcp container.
 ::
 :: Tags the current image :prev, rebuilds ONLY the yt-dlp layer (YTDLP_BUILD arg,
-:: see Dockerfile), restarts the container and polls /healthz. If the new build is
-:: unhealthy it rolls back to :prev, so a bad nightly can't leave the server down.
+:: see Dockerfile), restarts the container and polls /healthz, then runs smoke.sh in
+:: it (yt-dlp must still resolve real videos). If either fails it rolls back to :prev,
+:: so a bad nightly can't leave the server down or unable to extract.
 ::
 :: Run by Task Scheduler (weekly) or by hand. Appends to update.log. Never tails
 :: logs, so the scheduled task always exits.
@@ -62,6 +63,14 @@ if !HEALTHY!==0 (
     call :log "UNHEALTHY after ~60s - rolling back."
     goto :rollback
 )
+
+call :log "Smoke test (smoke.sh) ..."
+docker exec -u app -e HOME=/home/app transcribe-mcp sh /app/smoke.sh >>"%LOG%" 2>&1
+if errorlevel 1 (
+    call :log "SMOKE TEST FAILED (details above in update.log) - rolling back."
+    goto :rollback
+)
+call :log "Smoke test OK"
 
 for /f "tokens=*" %%v in ('docker exec transcribe-mcp yt-dlp --version 2^>nul') do set YTDLP=%%v
 call :log "SUCCESS - yt-dlp now %YTDLP%"

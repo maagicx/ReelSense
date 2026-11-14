@@ -28,6 +28,7 @@ COPY server.py media.py deepgram.py consent_page.py signin.py pipeline.py transc
 COPY music_id/ ./music_id/
 COPY static/ ./static/
 COPY entrypoint.sh /entrypoint.sh
+COPY smoke.sh ./
 
 # OAuth client registrations and encrypted session tokens live here; run.bat mounts a
 # named volume so rebuilds and update.bat don't sign everyone out.
