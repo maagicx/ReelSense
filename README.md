@@ -210,7 +210,7 @@ The first build takes a few minutes. Then check:
 
 Sign-in state and the music cache live in the Docker volume `reelsense-data`. Keep it: deleting it signs everyone out.
 
-On Windows you can also use the scripts instead of Compose: `build.bat`, then `run.bat`, and `tunnel.bat` for the Cloudflare Tunnel (option A; it reads `CLOUDFLARE_TUNNEL_TOKEN` from `.env` and runs cloudflared in its own container). They expect `cookies.txt` next to them. `deploy.bat` pulls, builds and restarts in one step; `update.bat` refreshes yt-dlp.
+On Windows you can also use the scripts instead of Compose: `build.bat`, then `run.bat`, and `tunnel.bat` for the Cloudflare Tunnel (option A; it reads `CLOUDFLARE_TUNNEL_TOKEN` from `.env` and runs cloudflared in its own container). They expect `cookies.txt` next to them. `deploy.bat` pulls, builds and restarts in one step; `update.bat` refreshes yt-dlp. The scripts' container is called `reelsense-server`, and its data lives in the volume `transcribe-mcp-data` (named before the rename; keep it).
 
 ### 6. Connect
 
@@ -228,14 +228,16 @@ Then try: *"Transcribe https://www.youtube.com/watch?v=… and summarise it."* I
 ## Keep it running
 
 - **Update ReelSense:** `git pull`, then the same `docker compose … up -d --build` command as in step 5.
-- **Refresh yt-dlp weekly.** Platforms break it often; an `HTTP Error 403` in the `[yt-dlp]` log lines is the usual sign (refresh `cookies.txt` too, if you use one). Run `docker compose build --build-arg YTDLP_BUILD=$(date +%s)`, then `docker compose up -d`. Windows users of the scripts can schedule `update.bat` instead, which also rolls back a bad build.
+- **Refresh yt-dlp weekly.** Platforms break it often; an `HTTP Error 403` in the `[yt-dlp]` log lines is the usual sign (refresh `cookies.txt` too, if you use one). Run `docker compose build --build-arg YTDLP_BUILD=$(date +%s)`, then `docker compose up -d`. Windows users of the scripts can schedule `update.bat` instead. It checks that the new build starts and can still read a real video, and rolls back to the previous one if not.
 - **Users:** edit `ALLOWED_USERS`, then run `docker compose up -d`. Compose recreates the container when `.env` changes.
+- **Python dependencies** are locked to exact versions in `requirements.txt`, so a rebuild installs what was tested. To update them, edit `requirements.in` if needed, run `./lock.sh`, then rebuild and test. Deno and cloudflared are pinned too: change the tag in the `Dockerfile`, `tunnel.bat` or `docker-compose.yml`.
+- **The host port** (8010) is published to this machine only, for Tailscale Funnel, a local proxy or a health check. The Cloudflare Tunnel doesn't need it. If a reverse proxy on another machine has to reach the server, set `HOST_BIND=0.0.0.0` in `.env` (Compose).
 
 ## Limits and costs
 
 Per-user hourly caps, the longest video allowed and a monthly AudD cap are all set in `.env`. Deepgram and AudD charge per use, so check their pricing before you open the server to other people.
 
-Links must point to the public internet: ReelSense refuses addresses that resolve to localhost, your LAN, the Docker host or Tailscale, so a signed-in user can't use it to reach machines on your network. The server runs as an unprivileged `app` user inside its container, and its port is published to this machine only (`127.0.0.1`): the tunnel reaches it over a private Docker network, so nothing on your LAN can go around the tunnel. Python dependencies are locked in `requirements.txt` (regenerate with `./lock.sh` from `requirements.in`); yt-dlp stays on the nightly, refreshed by `update.bat`.
+ReelSense only fetches links on the public internet; links to private or local network addresses are refused. Inside its container it runs as an unprivileged user.
 
 ## Licence
 
