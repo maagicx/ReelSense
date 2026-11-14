@@ -1,0 +1,7 @@
+# What ReelSense depends on directly. requirements.txt is the locked, tested set the
+# image installs; regenerate it with ./lock.sh after changing this file, then test.
+# yt-dlp is NOT here: the Dockerfile installs the nightly on its own layer so
+# update.bat can refresh it weekly without rebuilding anything else.
+fastmcp>=3.4.8,<4
+requests>=2.32
+uvicorn>=0.30

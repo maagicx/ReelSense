@@ -1,11 +1,10 @@
 FROM python:3.12-slim
 
 # ffmpeg for the audio transcode; Deno because yt-dlp's YouTube extractor needs a
-# JavaScript runtime to solve player challenges.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl unzip \
-    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
-    && apt-get remove -y curl unzip && apt-get autoremove -y \
+# JavaScript runtime to solve player challenges. Deno is pinned: bump the tag to update.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=denoland/deno:bin-2.9.8 /deno /usr/local/bin/deno
 
 # The server runs as this user (entrypoint.sh drops to it): yt-dlp, ffmpeg and Deno handle
 # media from anywhere, so a bug in one of them shouldn't get root in the container.
@@ -13,7 +12,7 @@ RUN useradd --create-home --uid 10001 --user-group app
 
 WORKDIR /app
 
-# Stable deps: this layer stays cached across yt-dlp refreshes.
+# Locked deps (see lock.sh): this layer stays cached across yt-dlp refreshes.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
