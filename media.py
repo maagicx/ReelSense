@@ -168,15 +168,44 @@ def _base_opts(url: str) -> dict:
     return opts
 
 
-def _with_cookies(opts: dict, tag: str) -> Optional[str]:
+def _cookie_copy(tag: str) -> Optional[str]:
     """yt-dlp rewrites the jar, and the mounted one is read-only and shared,
     so each run gets its own writable copy. Returns the copy's path."""
     if not (COOKIES_FILE and os.path.exists(COOKIES_FILE)):
         return None
     path = os.path.join(TMP, f"{tag}.cookies.txt")
     shutil.copyfile(COOKIES_FILE, path)
-    opts["cookiefile"] = path
     return path
+
+
+def _is_youtube_target(target: str) -> bool:
+    return target.startswith("ytsearch") or platform_of(target) == "youtube"
+
+
+def _ytdl(target: str, opts: dict, tag: str, download: bool = False) -> dict:
+    """yt-dlp's extract_info with the cookie policy, failures as UserError.
+
+    Cookies go with every request except YouTube's first try. YouTube rotates the
+    cookies of an open browser session within minutes of an export, and stale ones
+    make it refuse downloads (HTTP 403) even of public videos, which need no cookies.
+    So YouTube goes without first and retries with cookies only if that fails
+    (age-restricted, members-only, private, a bot check)."""
+    cookies = _cookie_copy(tag)
+    jars = [None, cookies] if cookies and _is_youtube_target(target) else [cookies]
+    try:
+        for i, jar in enumerate(jars):
+            run = {**opts, "cookiefile": jar} if jar else opts
+            try:
+                with yt_dlp.YoutubeDL(run) as ydl:
+                    return ydl.extract_info(target, download=download)
+            except Exception as exc:
+                if i == len(jars) - 1:
+                    raise humanise(exc) from exc
+                log.info(f"[yt-dlp] {tag}: YouTube without cookies failed, retrying with cookies "
+                         f"({str(exc)[:200]})")
+    finally:
+        if cookies:
+            _rm(cookies)
 
 
 def _date(yyyymmdd: Optional[str]) -> Optional[str]:
@@ -291,16 +320,7 @@ def probe(url: str, tag: str, with_key: bool = False) -> dict:
     url = normalise_url(url)
     if _is_tiktok_photo(url):
         raise UserError("This is a TikTok photo post: there is no audio to transcribe.")
-    opts = {**_base_opts(url), "skip_download": True}
-    cookies = _with_cookies(opts, f"{tag}-probe")
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as exc:
-        raise humanise(exc) from exc
-    finally:
-        if cookies:
-            _rm(cookies)
+    info = _ytdl(url, {**_base_opts(url), "skip_download": True}, f"{tag}-probe")
     if info.get("_type") == "playlist":
         raise UserError("That URL is a playlist or channel. Pass a single video link, "
                         "or use list_videos / channel_info.")
@@ -340,15 +360,7 @@ def _flat_extract(target: str, tag: str, allow_video: bool = False, **extra) -> 
                         f"extractor is marked broken). Links to individual {platform} posts still work.")
     opts = {**_base_opts(target), "noplaylist": False, "skip_download": True,
             "extract_flat": "in_playlist", **extra}
-    cookies = _with_cookies(opts, tag)
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(target, download=False)
-    except Exception as exc:
-        raise humanise(exc) from exc
-    finally:
-        if cookies:
-            _rm(cookies)
+    info = _ytdl(target, opts, tag)
     if info.get("_type") != "playlist" and not allow_video:
         raise UserError("That URL is a single video. Pass a channel, playlist or profile link.")
     return info
@@ -565,15 +577,7 @@ def comments(url: str, limit: int, tag: str) -> list[dict]:
         # max-comments, max-parents, max-replies, max-replies-per-thread: no replies.
         "extractor_args": {"youtube": {"max_comments": [str(limit), "all", "0", "0"], "comment_sort": ["top"]}},
     }
-    cookies = _with_cookies(opts, f"{tag}-comments")
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as exc:
-        raise humanise(exc) from exc
-    finally:
-        if cookies:
-            _rm(cookies)
+    info = _ytdl(url, opts, f"{tag}-comments")
     out = []
     for c in (info.get("comments") or [])[:limit]:
         item = {"author": c.get("author"), "text": c.get("text") or ""}
@@ -678,12 +682,7 @@ def download_audio(url: str, job_id: str, section: Optional[dict] = None, music:
         # Without this the cut lands on the stream's previous keyframe, up to ~10 s early,
         # and the segment timestamps (shifted by start) would be off by that much.
         opts["force_keyframes_at_cuts"] = True
-    _with_cookies(opts, job_id)  # cleaned up with the rest of {job_id}.* by cleanup()
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-    except Exception as exc:
-        raise humanise(exc) from exc
+    _ytdl(url, opts, job_id, download=True)
 
     path = os.path.join(TMP, f"{job_id}.mp3")
     if not os.path.exists(path):
@@ -715,15 +714,7 @@ def _video_stream(url: str, tag: str) -> tuple[dict, dict]:
     first: every ffmpeg decodes it."""
     opts = {**_base_opts(url), "skip_download": True, "format": "bv*[protocol^=m3u8]/bv*/b",
             "format_sort": [f"res:{FRAME_SOURCE_HEIGHT}", "vcodec:h264"]}
-    cookies = _with_cookies(opts, f"{tag}-frames")
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as exc:
-        raise humanise(exc) from exc
-    finally:
-        if cookies:
-            _rm(cookies)
+    info = _ytdl(url, opts, f"{tag}-frames")
     if info.get("_type") == "playlist":
         raise UserError("That URL is a playlist or channel. Pass a single video link.")
     fmt = next((f for f in info.get("requested_formats") or [] if f.get("vcodec") not in (None, "none")), info)
@@ -757,12 +748,7 @@ def _download_video(url: str, tag: str) -> str:
             "format_sort": [f"res:{FRAME_SOURCE_HEIGHT}", "vcodec:h264"],
             "max_filesize": int(FRAME_DOWNLOAD_MAX_MB * 1024 * 1024),
             "outtmpl": os.path.join(TMP, f"{tag}.%(ext)s")}
-    _with_cookies(opts, tag)
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-    except Exception as exc:
-        raise humanise(exc) from exc
+    _ytdl(url, opts, tag, download=True)
     files = [f for f in glob.glob(os.path.join(TMP, f"{glob.escape(tag)}.*"))
              if not f.endswith((".part", ".txt", ".ytdl"))]
     if not files:

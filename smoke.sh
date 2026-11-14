@@ -6,8 +6,9 @@
 #
 #   docker exec -u app -e HOME=/home/app reelsense-server sh /app/smoke.sh [url ...]
 #
-# Default links are long-lived and public. Run as app, like the server, with a copy of
-# its cookies (yt-dlp rewrites the jar, and the server's copy shouldn't change).
+# Default links are long-lived and public. Run as app, like the server, and with the
+# server's cookie rule: without cookies first, then with a copy of them (yt-dlp rewrites
+# the jar, and the server's copy shouldn't change). See media._ytdl.
 
 [ $# -gt 0 ] || set -- \
     "https://www.youtube.com/watch?v=jNQXAC9IVRw"
@@ -26,14 +27,20 @@ if [ -f /tmp/cookies.mounted.txt ]; then
     cookies="--cookies /tmp/smoke.cookies.txt"
 fi
 
-for url in "$@"; do
+resolve() {
     # -f makes yt-dlp resolve a real format URL, which on YouTube means solving the
-    # player challenge with Deno: the step that breaks most often.
+    # player challenge with Deno: the step that breaks most often. Warnings (stderr)
+    # are shown only when the link fails; YouTube's are routine.
     # shellcheck disable=SC2086
-    # Warnings (stderr) are shown only when the link fails; YouTube's are routine.
-    if out=$(yt-dlp $cookies --no-playlist --socket-timeout 20 -f "bestaudio/best" \
-            --print "%(format_id)s %(title)s" "$url" 2>/tmp/smoke.err); then
+    yt-dlp $1 --no-playlist --socket-timeout 20 -f "bestaudio/best" \
+        --print "%(format_id)s %(title)s" "$2" 2>/tmp/smoke.err
+}
+
+for url in "$@"; do
+    if out=$(resolve "" "$url"); then
         echo "ok   $url -> $out"
+    elif [ -n "$cookies" ] && out=$(resolve "$cookies" "$url"); then
+        echo "ok   $url -> $out (needed cookies)"
     else
         echo "FAIL $url"
         tail -5 /tmp/smoke.err
