@@ -113,7 +113,7 @@ There's no router setup, your home IP stays hidden, and HTTPS is automatic. Clou
 1. In the [Cloudflare dashboard](https://dash.cloudflare.com), **add your domain** on the Free plan, then change the nameservers at your registrar to the two Cloudflare shows. Wait until the domain shows as *Active*.
 2. Open **Zero Trust → Networks → Tunnels → Create a tunnel**, choose **Cloudflared** and name it `reelsense`.
 3. On the install page, choose **Docker** and copy the long token after `--token`. Put it in `.env` as `CLOUDFLARE_TUNNEL_TOKEN=`. You don't need to run the command shown: Docker Compose starts the connector in step 5.
-4. Add a **public hostname** (newer dashboards call it *Published application route*): subdomain `mcp`, your domain, service type **HTTP**, URL **`reelsense:8010`**. With the Windows `.bat` scripts and `tunnel.bat`, use **`transcribe-mcp:8010`** instead.
+4. Add a **public hostname** (newer dashboards call it *Published application route*): subdomain `mcp`, your domain, service type **HTTP**, URL **`reelsense:8010`**. With the Windows `.bat` scripts and `tunnel.bat`, use **`reelsense-server:8010`** instead.
 5. In `.env`, set `PUBLIC_URL=https://mcp.example.com` and `ALLOWED_HOSTS=mcp.example.com`, using your hostname.
 
 Optional: in the Cloudflare dashboard, add a rate-limit rule for the hostname (Security → WAF), e.g. 60 requests a minute per IP.

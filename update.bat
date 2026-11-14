@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 :: ---------------------------------------------------------------------------
-:: Weekly yt-dlp refresh for the transcribe-mcp container.
+:: Weekly yt-dlp refresh for the reelsense-server container.
 ::
 :: Tags the current image :prev, rebuilds ONLY the yt-dlp layer (YTDLP_BUILD arg,
 :: see Dockerfile), restarts the container and polls /healthz, then runs smoke.sh in
@@ -20,20 +20,20 @@ set TOKEN=%TOKEN: =%
 
 call :log "=== update start %DATE% %TIME%"
 
-docker image inspect transcribe-mcp >nul 2>&1
+docker image inspect reelsense-server >nul 2>&1
 if errorlevel 1 (
-    call :log "FATAL: image transcribe-mcp not found - run build.bat first."
+    call :log "FATAL: image reelsense-server not found - run build.bat first."
     exit /b 1
 )
-docker tag transcribe-mcp transcribe-mcp:prev
+docker tag reelsense-server reelsense-server:prev
 if errorlevel 1 (
     call :log "FATAL: could not tag :prev - aborting before any change."
     exit /b 1
 )
-call :log "Tagged current image as transcribe-mcp:prev"
+call :log "Tagged current image as reelsense-server:prev"
 
 call :log "Building with YTDLP_BUILD=%TOKEN% ..."
-docker build --progress=plain --build-arg YTDLP_BUILD=%TOKEN% -t transcribe-mcp . >>"%LOG%" 2>&1
+docker build --progress=plain --build-arg YTDLP_BUILD=%TOKEN% -t reelsense-server . >>"%LOG%" 2>&1
 if errorlevel 1 (
     call :log "Build FAILED - container untouched, still running the old image."
     exit /b 1
@@ -65,20 +65,20 @@ if !HEALTHY!==0 (
 )
 
 call :log "Smoke test (smoke.sh) ..."
-docker exec -u app -e HOME=/home/app transcribe-mcp sh /app/smoke.sh >>"%LOG%" 2>&1
+docker exec -u app -e HOME=/home/app reelsense-server sh /app/smoke.sh >>"%LOG%" 2>&1
 if errorlevel 1 (
     call :log "SMOKE TEST FAILED (details above in update.log) - rolling back."
     goto :rollback
 )
 call :log "Smoke test OK"
 
-for /f "tokens=*" %%v in ('docker exec transcribe-mcp yt-dlp --version 2^>nul') do set YTDLP=%%v
+for /f "tokens=*" %%v in ('docker exec reelsense-server yt-dlp --version 2^>nul') do set YTDLP=%%v
 call :log "SUCCESS - yt-dlp now %YTDLP%"
 call :log ""
 exit /b 0
 
 :rollback
-docker tag transcribe-mcp:prev transcribe-mcp
+docker tag reelsense-server:prev reelsense-server
 call :restart_container
 if errorlevel 1 (
     call :log "CRITICAL: rollback container failed to start - server is DOWN, fix by hand."
@@ -100,11 +100,11 @@ exit /b 1
 
 :: Mirrors run.bat's docker run (minus the log tail). Keep in sync.
 :restart_container
-docker rm -f transcribe-mcp >nul 2>&1
+docker rm -f reelsense-server transcribe-mcp >nul 2>&1
 set COOKIE_ARG=
 if exist cookies.txt set COOKIE_ARG=-v "%~dp0cookies.txt:/cookies/cookies.txt:ro" -e COOKIES_FILE=/cookies/cookies.txt
 docker network create reelsense >nul 2>&1
-docker run -d --name transcribe-mcp --network reelsense --env-file .env %COOKIE_ARG% -v transcribe-mcp-data:/data -p 127.0.0.1:8010:8010 --restart unless-stopped transcribe-mcp >>"%LOG%" 2>&1
+docker run -d --name reelsense-server --network reelsense --env-file .env %COOKIE_ARG% -v transcribe-mcp-data:/data -p 127.0.0.1:8010:8010 --restart unless-stopped reelsense-server >>"%LOG%" 2>&1
 exit /b %errorlevel%
 
 :log

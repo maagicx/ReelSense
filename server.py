@@ -1279,7 +1279,7 @@ async def home(_: Request) -> HTMLResponse:
 def build_app():
     # Plus the names a tunnel container on the same Docker network may use (README, tunnel.bat).
     hosts = ALLOWED_HOSTS + ["localhost", "127.0.0.1", "host.docker.internal",
-                             "transcribe-mcp", "transcribe-mcp-auth", "reelsense"]
+                             "reelsense-server", "reelsense-server-auth", "reelsense"]
     return mcp.http_app(path="/mcp", stateless_http=True, allowed_hosts=hosts)
 
 

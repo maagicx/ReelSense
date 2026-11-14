@@ -4,8 +4,8 @@
 ::
 :: Needs CLOUDFLARE_TUNNEL_TOKEN in .env: Zero Trust -> Networks -> Tunnels -> your
 :: tunnel -> the long string after --token. The tunnel is managed in the dashboard: give
-:: its public hostname the service  http://transcribe-mcp:8010  (staging:
-:: http://transcribe-mcp-auth:8010). Both containers join the reelsense network, which
+:: its public hostname the service  http://reelsense-server:8010  (staging:
+:: http://reelsense-server-auth:8010). Both containers join the reelsense network, which
 :: is how the tunnel finds the server by name. Re-run it after changing the token.
 :: cloudflared is pinned: bump CLOUDFLARED to update it.
 :: The container restarts with Docker; this doesn't need to run again after a reboot.

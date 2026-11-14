@@ -4,7 +4,7 @@
 # fine but can't extract (the usual way a bad one fails) makes this exit non-zero,
 # and update.bat rolls back. Proves yt-dlp works, not that it is safe.
 #
-#   docker exec -u app -e HOME=/home/app transcribe-mcp sh /app/smoke.sh [url ...]
+#   docker exec -u app -e HOME=/home/app reelsense-server sh /app/smoke.sh [url ...]
 #
 # Default links are long-lived and public. Run as app, like the server, with a copy of
 # its cookies (yt-dlp rewrites the jar, and the server's copy shouldn't change).
