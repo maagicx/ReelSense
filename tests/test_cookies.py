@@ -16,25 +16,30 @@ from media import UserError  # noqa: E402
 
 
 class FakeYDL:
-    """Records the cookiefile of each run; fails the runs listed in `fail`."""
-    def __init__(self, fail=()):
-        self.calls, self.fail = [], set(fail)
+    """Records the cookiefile of each run; fails the runs listed in `fail` with `error`,
+    and sends yt-dlp's stale-cookies warning on the runs listed in `stale`."""
+    def __init__(self, fail=(), error="ERROR: unable to download video data: HTTP Error 403: Forbidden",
+                 stale=()):
+        self.calls, self.fail, self.error, self.stale = [], set(fail), error, set(stale)
 
     def __call__(self, opts):
         n = len(self.calls)
         self.calls.append(opts.get("cookiefile"))
         if opts.get("cookiefile"):
             assert os.path.exists(opts["cookiefile"]), "cookie copy missing during the run"
+        if n in self.stale:
+            opts["logger"].warning("[youtube] The provided YouTube account cookies are no longer valid.")
         ydl = mock.MagicMock()
         ydl.__enter__.return_value = ydl
         if n in self.fail:
-            ydl.extract_info.side_effect = Exception("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+            ydl.extract_info.side_effect = Exception(self.error)
         else:
             ydl.extract_info.return_value = {"id": "x", "run": n}
         return ydl
 
 
-class CookiePolicy(unittest.TestCase):
+class WithCookieJar(unittest.TestCase):
+    """A cookies.txt and a TMP of its own; no tests here."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         jar = os.path.join(self.tmp.name, "cookies.txt")
@@ -52,6 +57,9 @@ class CookiePolicy(unittest.TestCase):
 
     def leftover_copies(self):
         return [f for f in os.listdir(self.tmp.name) if f != "cookies.txt"]
+
+
+class CookiePolicy(WithCookieJar):
 
     def test_youtube_public_needs_no_cookies(self):
         fake = FakeYDL()
@@ -99,6 +107,47 @@ class CookiePolicy(unittest.TestCase):
                 except UserError:
                     pass
                 self.assertEqual(self.leftover_copies(), [])
+
+
+SIGN_IN = "ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate for some users."
+
+
+class CookieMessages(WithCookieJar):
+    """What the user is told when the server's cookies are, or may be, to blame."""
+    def error_for(self, target, fake):
+        with self.assertRaises(UserError) as ctx, self.assertLogs("transcribe-mcp", "INFO") as logs:
+            self.run_with(target, fake)
+        return str(ctx.exception), "\n".join(logs.output)
+
+    def test_stale_youtube_cookies(self):
+        msg, logs = self.error_for("https://www.youtube.com/watch?v=x", FakeYDL(fail={0, 1}, stale={1}))
+        self.assertEqual(msg, "The server's YouTube cookies have expired, so YouTube refused the request. "
+                              "Ask the server's admin to refresh its cookies.txt.")
+        self.assertIn("[cookies] YouTube", logs)
+
+    def test_sign_in_with_cookies(self):
+        msg, _ = self.error_for("https://www.youtube.com/watch?v=x", FakeYDL(fail={0, 1}, error=SIGN_IN))
+        self.assertIn("cookies didn't pass it", msg)
+        self.assertIn("refresh its cookies.txt", msg)
+
+    def test_instagram_login_names_the_site(self):
+        fake = FakeYDL(fail={0}, error="ERROR: [Instagram] x: Requested content is not available, "
+                                       "rate-limit reached or login required")
+        msg, _ = self.error_for("https://www.instagram.com/reel/x/", fake)
+        self.assertTrue(msg.startswith("Instagram asked for a sign-in"), msg)
+
+    def test_sign_in_without_cookie_file(self):
+        with mock.patch.object(media, "COOKIES_FILE", None), \
+                mock.patch.object(media.yt_dlp, "YoutubeDL", FakeYDL(fail={0}, error=SIGN_IN)), \
+                self.assertRaises(UserError) as ctx:
+            media._ytdl("https://www.youtube.com/watch?v=x", {}, "t1")
+        self.assertIn("this server has no cookies.txt", str(ctx.exception))
+
+    def test_other_failures_dont_blame_cookies(self):
+        fake = FakeYDL(fail={0, 1}, error="ERROR: [youtube] x: Video unavailable")
+        with mock.patch.object(media.yt_dlp, "YoutubeDL", fake), self.assertRaises(UserError) as ctx:
+            media._ytdl("https://www.youtube.com/watch?v=x", {}, "t1")
+        self.assertEqual(str(ctx.exception), "The video is private, removed or unavailable.")
 
 
 if __name__ == "__main__":

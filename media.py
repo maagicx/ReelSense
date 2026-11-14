@@ -145,11 +145,19 @@ def _is_tiktok_photo(url: str) -> bool:
 # ---------------------------------------------------------------- yt-dlp
 
 class _QuietLogger:
-    """Swallow yt-dlp's console output; errors still arrive as exceptions."""
+    """Swallow yt-dlp's console output; errors still arrive as exceptions. Notes the
+    one warning that matters: yt-dlp saying the cookies it was given are invalid
+    (YouTube rotated them), which the error itself doesn't mention."""
+    def __init__(self):
+        self.stale_cookies = False
+
     def debug(self, msg): pass
     def info(self, msg): pass
-    def warning(self, msg): pass
     def error(self, msg): pass
+
+    def warning(self, msg):
+        if "cookies are no longer valid" in str(msg).lower():
+            self.stale_cookies = True
 
 
 def _base_opts(url: str) -> dict:
@@ -194,13 +202,14 @@ def _ytdl(target: str, opts: dict, tag: str, download: bool = False) -> dict:
     jars = [None, cookies] if cookies and _is_youtube_target(target) else [cookies]
     try:
         for i, jar in enumerate(jars):
-            run = {**opts, "cookiefile": jar} if jar else opts
+            logger = _QuietLogger()
+            run = {**opts, "logger": logger, **({"cookiefile": jar} if jar else {})}
             try:
                 with yt_dlp.YoutubeDL(run) as ydl:
                     return ydl.extract_info(target, download=download)
             except Exception as exc:
                 if i == len(jars) - 1:
-                    raise humanise(exc) from exc
+                    raise _failure(exc, target, bool(jar), logger.stale_cookies) from exc
                 log.info(f"[yt-dlp] {tag}: YouTube without cookies failed, retrying with cookies "
                          f"({str(exc)[:200]})")
     finally:
@@ -799,11 +808,11 @@ def _rm(path: str) -> None:
 
 # ---------------------------------------------------------------- errors
 
+_SIGN_IN = "The platform asked for a sign-in or bot check."
 _ERROR_RULES = [
     (("unsupported url",), "This site or URL isn't supported by yt-dlp."),
     (("sign in to confirm", "not a bot", "confirm you", "rate-limit reached", "login required",
-      "requested content is not available", "--cookies"),
-     "The platform asked for a login or bot check. The server's cookies.txt needs refreshing."),
+      "requested content is not available", "--cookies"), _SIGN_IN),
     (("private video", "this video is private", "video unavailable", "has been removed",
       "no longer available", "not found", "http error 404", "deleted", "account has been terminated"),
      "The video is private, removed or unavailable."),
@@ -815,6 +824,33 @@ _ERROR_RULES = [
     (("live event will begin", "is live", "premieres in"),
      "Live streams and upcoming premieres can't be transcribed."),
 ]
+
+
+_SITE_NAMES = {"youtube": "YouTube", "tiktok": "TikTok", "instagram": "Instagram",
+               "facebook": "Facebook", "x": "X", "vimeo": "Vimeo"}
+
+
+def _cookie_problem(site: str, why: str) -> UserError:
+    """A failure the server admin fixes, not the user: say so to both."""
+    log.warning(f"[cookies] {site}: {why} Export a fresh cookies.txt (from a private browser "
+                "window, then close it) and restart the server.")
+    return UserError(f"{why} Ask the server's admin to refresh its cookies.txt.")
+
+
+def _failure(exc: Exception, target: str, used_cookies: bool, stale: bool) -> UserError:
+    """humanise, plus whether the server's cookies are to blame: the user can't fix
+    those, and the admin needs to know they should."""
+    site = "YouTube" if _is_youtube_target(target) else _SITE_NAMES.get(platform_of(target), platform_of(target))
+    if used_cookies and stale:
+        return _cookie_problem(site, f"The server's {site} cookies have expired, so {site} refused the request.")
+    err = humanise(exc)
+    if str(err) != _SIGN_IN:
+        return err
+    if used_cookies:
+        return _cookie_problem(site, f"{site} asked for a sign-in or bot check, and the server's "
+                                     "cookies didn't pass it: they have probably expired.")
+    return UserError(f"{site} asked for a sign-in or bot check. That needs a signed-in session, and "
+                     "this server has no cookies.txt. Ask the server's admin to add one.")
 
 
 def humanise(exc: Exception) -> UserError:
