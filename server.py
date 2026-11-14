@@ -467,13 +467,15 @@ async def video_info(url: str, full: bool = False) -> dict:
     tags, thumbnail, channel ids, the heatmap and the whole description. Skip it when
     transcribing: transcribe_video returns the same.
     For YouTube, always tell the user whether it has auto captions (auto_captions)."""
-    t0 = time.time()
+    (uid, name), t0 = _caller(), time.time()
+    if not JOBS.take_slot(uid, "meta", MAX_META_CALLS_PER_HOUR):
+        return {"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} info/list/search/channel calls per hour reached."}
     try:
         info = await asyncio.to_thread(media.probe, url, f"info-{uuid.uuid4().hex[:8]}")
     except UserError as exc:
         info = {"status": "error", "error": str(exc)}
     result = await asyncio.to_thread(_video_result, info, full)
-    log.info(f"[mcp] {_caller()[1]} info {info.get('platform', '-')} {info.get('duration') or 0}s "
+    log.info(f"[mcp] {name} info {info.get('platform', '-')} {info.get('duration') or 0}s "
              f"{int((time.time() - t0) * 1000)}ms")
     return result
 
@@ -481,7 +483,7 @@ async def video_info(url: str, full: bool = False) -> dict:
 async def _listing(kind: str, platform: str, fetch, *args) -> dict:
     (uid, name), t0 = _caller(), time.time()
     if not JOBS.take_slot(uid, "meta", MAX_META_CALLS_PER_HOUR):
-        return {"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} list/search/channel calls per hour reached."}
+        return {"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} info/list/search/channel calls per hour reached."}
     try:
         videos, approx, *extra = await asyncio.to_thread(fetch, *args, f"{kind}-{uuid.uuid4().hex[:8]}")
         result = {"videos": videos, "count": len(videos), **(extra[0] if extra else {})}
@@ -532,7 +534,7 @@ async def channel_info(url: str) -> dict:
     and verified. Other platforms return what exists plus a note."""
     (uid, name), t0 = _caller(), time.time()
     if not JOBS.take_slot(uid, "meta", MAX_META_CALLS_PER_HOUR):
-        return {"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} list/search/channel calls per hour reached."}
+        return {"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} info/list/search/channel calls per hour reached."}
     try:
         result = await asyncio.to_thread(media.channel, url, f"ch-{uuid.uuid4().hex[:8]}")
     except UserError as exc:
@@ -1176,8 +1178,8 @@ finding what's on screen counts once, for the transcript and its stills together
 answered from the cache (a video already identified) doesn't count.
 - A video transcribed once is kept for a week, so asking about it again doesn't transcribe it again.
 - Limits per person per hour: {MAX_JOBS_PER_HOUR} transcriptions, frame grabs, music lookups and \
-comment requests ({MAX_MUSIC_FULL_PER_HOUR} of them full music scans), {MAX_META_CALLS_PER_HOUR} lists, \
-searches and channel lookups, {MAX_SPOTIFY_PER_HOUR} Spotify searches and {MAX_SPOTIFY_PER_HOUR} \
+comment requests ({MAX_MUSIC_FULL_PER_HOUR} of them full music scans), {MAX_META_CALLS_PER_HOUR} video info \
+lookups, lists, searches and channel lookups, {MAX_SPOTIFY_PER_HOUR} Spotify searches and {MAX_SPOTIFY_PER_HOUR} \
 Apple Music searches.
 - You sign in with your {signin.LABEL} account. Access is granted by the server's admin.
 """

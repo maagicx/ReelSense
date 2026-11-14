@@ -6,16 +6,18 @@ Failures surface as UserError with a short message fit for a tool result.
 import base64
 import glob
 import html
+import ipaddress
 import json
 import logging
 import math
 import os
 import re
 import shutil
+import socket
 import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 import requests
 import yt_dlp
@@ -81,7 +83,30 @@ def normalise_url(url: str) -> str:
     m = _ALJAZEERA_RE.match(url)
     if m:
         url = f"{m.group(1)}/program/{m.group(2)}"
+    host = urlparse(url).hostname
+    if not is_public_host(host):
+        raise UserError(f"{host or 'That link'} isn't a public internet address. Pass a public link to the video.")
     return url
+
+
+def is_public_host(host: Optional[str]) -> bool:
+    """True if host resolves, and only to public internet addresses. Keeps links (and the
+    images fetched for cards) off the server's own network: localhost, the LAN, the Docker
+    host, Tailscale's 100.64/10. Checks the link as given; the redirects and media URLs
+    yt-dlp follows after that aren't covered."""
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, ValueError):
+        return False
+    for *_, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0].split("%")[0])
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if not ip.is_global or ip.is_multicast:
+            return False
+    return bool(infos)
 
 
 _PLATFORMS = {
@@ -498,15 +523,23 @@ def image_data_uri(url: str) -> Optional[str]:
     """An image as a data: URI, for the card's _meta when the card can't load the URL
     itself (signed links that expire, CDNs that refuse other sites). None if it fails,
     isn't an image or is over MAX_CARD_IMAGE_BYTES."""
-    if not url.startswith("https://"):
-        return None
     try:
-        with requests.get(url, headers=_BROWSER_HEADERS, timeout=10, stream=True) as r:
-            r.raise_for_status()
-            kind = r.headers.get("content-type", "").split(";")[0].strip().lower()
-            if not kind.startswith("image/"):
+        for _ in range(5):  # redirects followed by hand, so each hop gets the same check
+            if not url.startswith("https://") or not is_public_host(urlparse(url).hostname):
                 return None
-            body = r.raw.read(MAX_CARD_IMAGE_BYTES + 1, decode_content=True)
+            with requests.get(url, headers=_BROWSER_HEADERS, timeout=10, stream=True,
+                              allow_redirects=False) as r:
+                if r.is_redirect:
+                    url = urljoin(url, r.headers.get("location", ""))
+                    continue
+                r.raise_for_status()
+                kind = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                if not kind.startswith("image/"):
+                    return None
+                body = r.raw.read(MAX_CARD_IMAGE_BYTES + 1, decode_content=True)
+                break
+        else:
+            return None
     except (requests.RequestException, OSError):
         return None
     if not body or len(body) > MAX_CARD_IMAGE_BYTES:

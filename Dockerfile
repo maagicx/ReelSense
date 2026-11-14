@@ -7,6 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl unz
     && apt-get remove -y curl unzip && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
+# The server runs as this user (entrypoint.sh drops to it): yt-dlp, ffmpeg and Deno handle
+# media from anywhere, so a bug in one of them shouldn't get root in the container.
+RUN useradd --create-home --uid 10001 --user-group app
+
 WORKDIR /app
 
 # Stable deps: this layer stays cached across yt-dlp refreshes.
@@ -24,10 +28,12 @@ RUN echo "yt-dlp build token: $YTDLP_BUILD" \
 COPY server.py media.py deepgram.py consent_page.py signin.py pipeline.py transcript_cache.py on_screen.py embeddings.py ./
 COPY music_id/ ./music_id/
 COPY static/ ./static/
+COPY entrypoint.sh /entrypoint.sh
 
 # OAuth client registrations and encrypted session tokens live here; run.bat mounts a
 # named volume so rebuilds and update.bat don't sign everyone out.
 ENV PYTHONUNBUFFERED=1 FASTMCP_HOME=/data
-RUN mkdir -p /data
+RUN mkdir -p /data && chown app:app /data
 EXPOSE 8010
+ENTRYPOINT ["sh", "/entrypoint.sh"]
 CMD ["python", "server.py"]

@@ -235,6 +235,8 @@ Then try: *"Transcribe https://www.youtube.com/watch?v=… and summarise it."* I
 
 Per-user hourly caps, the longest video allowed and a monthly AudD cap are all set in `.env`. Deepgram and AudD charge per use, so check their pricing before you open the server to other people.
 
+Links must point to the public internet: ReelSense refuses addresses that resolve to localhost, your LAN, the Docker host or Tailscale, so a signed-in user can't use it to reach machines on your network. The server runs as an unprivileged `app` user inside its container.
+
 ## Licence
 
 [MIT](LICENSE)
