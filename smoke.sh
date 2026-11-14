@@ -30,15 +30,16 @@ for url in "$@"; do
     # -f makes yt-dlp resolve a real format URL, which on YouTube means solving the
     # player challenge with Deno: the step that breaks most often.
     # shellcheck disable=SC2086
+    # Warnings (stderr) are shown only when the link fails; YouTube's are routine.
     if out=$(yt-dlp $cookies --no-playlist --socket-timeout 20 -f "bestaudio/best" \
-            --print "%(format_id)s %(title)s" "$url" 2>&1); then
+            --print "%(format_id)s %(title)s" "$url" 2>/tmp/smoke.err); then
         echo "ok   $url -> $out"
     else
         echo "FAIL $url"
-        echo "$out" | tail -5
+        tail -5 /tmp/smoke.err
         fail=1
     fi
 done
 
-rm -f /tmp/smoke.cookies.txt
+rm -f /tmp/smoke.cookies.txt /tmp/smoke.err
 exit $fail
