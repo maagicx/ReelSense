@@ -2,7 +2,12 @@
 
 ReelSense is a self-hosted MCP server that lets Claude (or ChatGPT) read, watch and listen to online videos. Paste a link from YouTube, TikTok, Instagram, Facebook, X, Vimeo, a news site or anything else [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports, and you get back a timestamped transcript with speaker labels.
 
-It can also:
+**It makes its own transcripts.** Many tools like this just fetch the platform's captions, such as YouTube's automatic ones. Those often get names and technical terms wrong, don't say who is speaking, and are missing on most other sites. ReelSense ignores them: it downloads the audio and transcribes it with [Deepgram](https://deepgram.com), so you get:
+- speaker labels (S1, S2, …) for interviews, podcasts and panels
+- punctuated sentences with timestamps that match the video, even when you transcribe only a part or a chapter
+- the same quality on TikTok, Instagram, X or a news site as on YouTube, including videos that have no captions at all
+
+It still uses what the platforms do provide, such as chapters, most-replayed moments, comments and channel details, and adds its own on top. It can also:
 - look up video and channel details, list a channel's videos (newest or most popular) and search YouTube
 - read YouTube comments
 - take still frames Claude can look at (slides, on-screen text)
