@@ -190,16 +190,27 @@ def _is_youtube_target(target: str) -> bool:
     return target.startswith("ytsearch") or platform_of(target) == "youtube"
 
 
+def _site(target: str) -> str:
+    """The platform's display name, for log lines and messages."""
+    return "YouTube" if _is_youtube_target(target) else _SITE_NAMES.get(platform_of(target), platform_of(target))
+
+
+def _cookies_last(target: str) -> bool:
+    """Sites tried without cookies first: public videos there need none, and a stale or
+    mismatched export makes them refuse even those."""
+    return _is_youtube_target(target) or platform_of(target) == "tiktok"
+
+
 def _ytdl(target: str, opts: dict, tag: str, download: bool = False) -> dict:
     """yt-dlp's extract_info with the cookie policy, failures as UserError.
 
-    Cookies go with every request except YouTube's first try. YouTube rotates the
-    cookies of an open browser session within minutes of an export, and stale ones
-    make it refuse downloads (HTTP 403) even of public videos, which need no cookies.
-    So YouTube goes without first and retries with cookies only if that fails
-    (age-restricted, members-only, private, a bot check)."""
+    Cookies go with every request except the first try on YouTube and TikTok. YouTube
+    rotates the cookies of an open browser session within minutes of an export, and
+    stale ones make it refuse downloads (HTTP 403) even of public videos, which need no
+    cookies; TikTok's go stale too. So those go without first and retry with cookies
+    only if that fails (age-restricted, members-only, private, a bot check, a CDN 403)."""
     cookies = _cookie_copy(tag)
-    jars = [None, cookies] if cookies and _is_youtube_target(target) else [cookies]
+    jars = [None, cookies] if cookies and _cookies_last(target) else [cookies]
     try:
         for i, jar in enumerate(jars):
             logger = _QuietLogger()
@@ -210,7 +221,7 @@ def _ytdl(target: str, opts: dict, tag: str, download: bool = False) -> dict:
             except Exception as exc:
                 if i == len(jars) - 1:
                     raise _failure(exc, target, bool(jar), logger.stale_cookies) from exc
-                log.info(f"[yt-dlp] {tag}: YouTube without cookies failed, retrying with cookies "
+                log.info(f"[yt-dlp] {tag}: {_site(target)} without cookies failed, retrying with cookies "
                          f"({str(exc)[:200]})")
     finally:
         if cookies:
@@ -840,9 +851,19 @@ def _cookie_problem(site: str, why: str) -> UserError:
 def _failure(exc: Exception, target: str, used_cookies: bool, stale: bool) -> UserError:
     """humanise, plus whether the server's cookies are to blame: the user can't fix
     those, and the admin needs to know they should."""
-    site = "YouTube" if _is_youtube_target(target) else _SITE_NAMES.get(platform_of(target), platform_of(target))
+    site = _site(target)
     if used_cookies and stale:
         return _cookie_problem(site, f"The server's {site} cookies have expired, so {site} refused the request.")
+    if "http error 403" in str(exc).lower():
+        # Read the details fine, refused the file (TikTok's CDN does this without valid
+        # cookies). Keep yt-dlp's words for the admin.
+        log.warning(f"[yt-dlp] {site} refused the download: {str(exc)[:300]}")
+        if used_cookies:
+            return _cookie_problem(site, f"{site} refused the download (HTTP 403) even with the server's "
+                                         f"cookies: its {site} cookies are probably missing or expired.")
+        return UserError(f"{site} refused the download (HTTP 403). This is often temporary: try again "
+                         "in a few minutes. If it keeps happening, ask the server's admin to add "
+                         f"{site} cookies to its cookies.txt or update yt-dlp.")
     err = humanise(exc)
     if str(err) != _SIGN_IN:
         return err

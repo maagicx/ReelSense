@@ -195,7 +195,7 @@ Set the rest of the required values:
 
 If a required value is missing, the server refuses to start and its log names the value.
 
-Optional: some platforms need a logged-in session (Instagram, and YouTube for age-restricted or members-only videos, or when it asks for a bot check). Export your browser's cookies in Netscape format to `cookies/cookies.txt`. YouTube is tried without cookies first and with them only if that fails: YouTube invalidates exported cookies quickly, and stale ones would otherwise break public videos too. To make YouTube cookies last, export them from a private window and then close it.
+Optional: some platforms need a logged-in session (Instagram; YouTube for age-restricted or members-only videos, or when it asks for a bot check; TikTok, whose video servers can refuse downloads without one). Export your browser's cookies in Netscape format to `cookies/cookies.txt`, signed in to each site you need. YouTube and TikTok are tried without cookies first and with them only if that fails: exported cookies go stale, and stale ones would otherwise break public videos too. To make cookies last, export them from a private window and then close it.
 
 ### 5. Start
 
