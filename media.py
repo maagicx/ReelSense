@@ -4,9 +4,9 @@ Everything here is synchronous and runs on the server's worker pool.
 Failures surface as UserError with a short message fit for a tool result.
 """
 import base64
+import contextvars
 import glob
 import html
-import contextvars
 import ipaddress
 import json
 import logging
@@ -16,8 +16,9 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 import requests
@@ -44,6 +45,13 @@ FRAME_SOURCE_HEIGHT = 720  # read frames from a stream no taller than this
 # impersonation): yt-dlp downloads the whole video, up to this size.
 FRAME_DOWNLOAD_MAX_MB = float(os.environ.get("FRAME_DOWNLOAD_MAX_MB") or 50)
 MAX_COMMENTS = int(os.environ.get("MAX_COMMENTS") or 200)
+
+# TikTok's video servers refuse some signed links at random (HTTP 403, about half of
+# them in Nov 2026); a fresh extraction gives a fresh link. Tries per download.
+TIKTOK_LINK_ATTEMPTS = int(os.environ.get("TIKTOK_LINK_ATTEMPTS") or 3)
+TIKTOK_RETRY_PAUSE_S = 2.0
+# The post's sound file stands in for the video's audio only if its length is this close.
+SOUND_LENGTH_TOLERANCE_S = 2.0
 
 # TikTok's CDN wants a desktop UA and a TikTok referer. Do NOT send these anywhere
 # else: a pinned UA contradicts the TLS fingerprint impersonating extractors present
@@ -245,28 +253,45 @@ def _cookies_last(target: str) -> bool:
     return _is_youtube_target(target)
 
 
-def _ytdl(target: str, opts: dict, tag: str, download: bool = False) -> dict:
+def _refused_link(exc: Exception, target: str) -> bool:
+    return platform_of(target) == "tiktok" and "http error 403" in str(exc).lower()
+
+
+def _ytdl(target: str, opts: dict, tag: str, download: bool = False,
+          setup: Optional[Callable[[yt_dlp.YoutubeDL], None]] = None) -> dict:
     """yt-dlp's extract_info with the cookie policy, failures as UserError.
 
     Cookies go with every request except YouTube's first try. YouTube rotates the
     cookies of an open browser session within minutes of an export, and stale ones
     make it refuse downloads (HTTP 403) even of public videos, which need no cookies.
     So YouTube goes without first and retries with cookies only if that fails
-    (age-restricted, members-only, private, a bot check)."""
+    (age-restricted, members-only, private, a bot check).
+
+    A TikTok link refused with a 403 is extracted again (a fresh signed link), up to
+    TIKTOK_LINK_ATTEMPTS tries. setup(ydl) runs on each new YoutubeDL before it starts."""
     cookies = _cookie_copy(tag)
     jars = [None, cookies] if cookies and _cookies_last(target) else [cookies]
     try:
         for i, jar in enumerate(jars):
-            logger = _QuietLogger()
-            run = {**opts, "logger": logger, **({"cookiefile": jar} if jar else {})}
-            try:
-                with yt_dlp.YoutubeDL(run) as ydl:
-                    return ydl.extract_info(target, download=download)
-            except Exception as exc:
-                if i == len(jars) - 1:
-                    raise _failure(exc, target, bool(jar), logger.stale_cookies) from exc
-                step(tag, f"{_site(target)} without cookies failed, retrying with cookies",
-                     f" ({str(exc)[:200]})")
+            for attempt in range(1, TIKTOK_LINK_ATTEMPTS + 1):
+                logger = _QuietLogger()
+                run = {**opts, "logger": logger, **({"cookiefile": jar} if jar else {})}
+                try:
+                    with yt_dlp.YoutubeDL(run) as ydl:
+                        if setup:
+                            setup(ydl)
+                        return ydl.extract_info(target, download=download)
+                except Exception as exc:
+                    if attempt < TIKTOK_LINK_ATTEMPTS and _refused_link(exc, target):
+                        step(tag, "TikTok refused the download link, retrying with a fresh one",
+                             f" ({str(exc)[:200]})")
+                        time.sleep(TIKTOK_RETRY_PAUSE_S)
+                        continue
+                    if i == len(jars) - 1:
+                        raise _failure(exc, target, bool(jar), logger.stale_cookies) from exc
+                    step(tag, f"{_site(target)} without cookies failed, retrying with cookies",
+                         f" ({str(exc)[:200]})")
+                    break
     finally:
         if cookies:
             _rm(cookies)
@@ -715,18 +740,74 @@ def resolve_section(meta: dict, start: Optional[float], end: Optional[float],
     return section
 
 
+def _own_sound(info: dict) -> bool:
+    """Whether a TikTok post's sound is the creator's own: its artist is the post's
+    channel or handle. Then it is the video's own audio (the same length)."""
+    names = {(info.get(k) or "").strip().casefold() for k in ("uploader", "channel", "creator")} - {""}
+    artists = info.get("artists") or [info.get("artist")]
+    return any(isinstance(a, str) and a.strip().casefold() in names for a in artists)
+
+
+class _TikTokSound(yt_dlp.postprocessor.PostProcessor):
+    """pre_process (before format selection): keeps TikTok's "audio" format only when
+    allowed and it is the creator's own sound, else removes it. "audio" is the post's
+    sound from TikTok's music servers: an mp3 that downloads first time, where the video
+    servers refuse about half the links. With a licensed track attached it is the whole
+    song (187 s of Mozart for a 50 s video with a voiceover), not the video's audio."""
+    def __init__(self, allow: bool):
+        super().__init__()
+        self.allow, self.used, self.duration = allow, False, None
+
+    def run(self, info):
+        formats = info.get("formats") or []
+        self.duration = info.get("duration")
+        self.used = (self.allow and bool(self.duration) and _own_sound(info)
+                     and any(f.get("format_id") == "audio" for f in formats))
+        if not self.used:
+            info["formats"] = [f for f in formats if f.get("format_id") != "audio"]
+        return [], info
+
+
+def _audio_length(path: str) -> Optional[float]:
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                              "-of", "csv=p=0", path], capture_output=True, text=True, timeout=30)
+        return float(out.stdout.strip())
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return None
+
+
 def download_audio(url: str, job_id: str, section: Optional[dict] = None, music: bool = False) -> str:
     """Download best audio and transcode to 16 kHz mono 64 kbps MP3 (speech), or with
     music=True 44.1 kHz mono 128 kbps (what fingerprinting wants). Returns its path.
-    section {start, end} downloads only that range (yt-dlp seeks; the rest isn't fetched)."""
+    section {start, end} downloads only that range (yt-dlp seeks; the rest isn't fetched).
+
+    On TikTok, a post with the creator's own sound downloads that sound file (quick and
+    reliable); its length is then checked against the video's, and on a mismatch the
+    video is downloaded instead. Other posts download the video."""
     url = normalise_url(url)
-    # TikTok lists the post's sound as an audio-only format "audio" from its music CDN:
-    # with a licensed track attached that is the whole song (187 s of Mozart for a 50 s
-    # video with a voiceover), not the video's own audio, so take the audio from the video.
-    fmt = "bestaudio[format_id!=audio]/best" if platform_of(url) == "tiktok" else "bestaudio/best"
+    tiktok = platform_of(url) == "tiktok"
+    sound = _TikTokSound(allow=True)
+    path = _download_audio(url, job_id, section, music, sound if tiktok else None)
+    if tiktok and sound.used:
+        expected = ((section["end"] or sound.duration) - section["start"]) if section else sound.duration
+        got = _audio_length(path)
+        if got is None or abs(got - expected) > SOUND_LENGTH_TOLERANCE_S:
+            step(job_id, "TikTok's sound file isn't the video's length, downloading the video instead",
+                 f" (sound {got}s, video {expected}s)")
+            _rm(path)
+            path = _download_audio(url, job_id, section, music, _TikTokSound(allow=False))
+        else:
+            step(job_id, "used the post's own sound file (quicker than the video)")
+    return path
+
+
+def _download_audio(url: str, job_id: str, section: Optional[dict], music: bool,
+                    sound: Optional[_TikTokSound]) -> str:
     opts = {
         **_base_opts(url),
-        "format": fmt,
+        # On TikTok, "audio" survives only if _TikTokSound keeps it.
+        "format": "audio/bestaudio/best" if sound else "bestaudio/best",
         # TikTok's HEVC formats are video-only despite advertising aac; prefer h264,
         # which actually carries audio, when no audio-only format exists.
         "format_sort": ["vcodec:h264"],
@@ -746,7 +827,8 @@ def download_audio(url: str, job_id: str, section: Optional[dict] = None, music:
         # Without this the cut lands on the stream's previous keyframe, up to ~10 s early,
         # and the segment timestamps (shifted by start) would be off by that much.
         opts["force_keyframes_at_cuts"] = True
-    _ytdl(url, opts, job_id, download=True)
+    setup = (lambda ydl: ydl.add_post_processor(sound, when="pre_process")) if sound else None
+    _ytdl(url, opts, job_id, download=True, setup=setup)
 
     path = os.path.join(TMP, f"{job_id}.mp3")
     if not os.path.exists(path):

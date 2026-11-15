@@ -46,7 +46,8 @@ class WithCookieJar(unittest.TestCase):
         with open(jar, "w") as f:
             f.write("# Netscape HTTP Cookie File\n")
         for patch in (mock.patch.object(media, "COOKIES_FILE", jar),
-                      mock.patch.object(media, "TMP", self.tmp.name)):
+                      mock.patch.object(media, "TMP", self.tmp.name),
+                      mock.patch.object(media, "TIKTOK_RETRY_PAUSE_S", 0)):
             patch.start()
             self.addCleanup(patch.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -87,11 +88,29 @@ class CookiePolicy(WithCookieJar):
         for url in ("https://www.instagram.com/p/x/", "https://www.tiktok.com/@a/video/1",
                     "https://x.com/a/status/1"):
             with self.subTest(url=url):
-                fake = FakeYDL(fail={0})
+                fake = FakeYDL(fail={0}, error="ERROR: Video unavailable")
                 with self.assertRaises(UserError):
                     self.run_with(url, fake)
                 self.assertEqual(len(fake.calls), 1)
                 self.assertIsNotNone(fake.calls[0])
+
+    def test_tiktok_refused_link_retries_fresh(self):
+        fake = FakeYDL(fail={0, 1})
+        self.assertEqual(self.run_with("https://www.tiktok.com/@a/video/1", fake)["run"], 2)
+        self.assertEqual(len(fake.calls), media.TIKTOK_LINK_ATTEMPTS)
+        self.assertTrue(all(fake.calls))  # same cookies on every try
+
+    def test_tiktok_other_errors_dont_retry(self):
+        fake = FakeYDL(fail={0}, error="ERROR: Video unavailable")
+        with self.assertRaises(UserError):
+            self.run_with("https://www.tiktok.com/@a/video/1", fake)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_youtube_403_isnt_retried_as_tiktok(self):
+        fake = FakeYDL(fail={0, 1})
+        with self.assertRaises(UserError):
+            self.run_with("https://www.youtube.com/watch?v=x", fake)
+        self.assertEqual(len(fake.calls), 2)  # without, then with cookies
 
     def test_no_cookie_file_means_one_plain_run(self):
         with mock.patch.object(media, "COOKIES_FILE", None):
@@ -145,7 +164,7 @@ class CookieMessages(WithCookieJar):
         self.assertIn("this server has no cookies.txt", str(ctx.exception))
 
     def test_tiktok_403_with_cookies_blames_them(self):
-        msg, logs = self.error_for("https://www.tiktok.com/@a/video/1", FakeYDL(fail={0}))
+        msg, logs = self.error_for("https://www.tiktok.com/@a/video/1", FakeYDL(fail={0, 1, 2}))
         self.assertEqual(msg, "TikTok refused the download (HTTP 403) even with the server's cookies: "
                               "its TikTok cookies are probably missing or expired. "
                               "Ask the server's admin to refresh its cookies.txt.")
@@ -155,7 +174,7 @@ class CookieMessages(WithCookieJar):
 
     def test_403_without_cookie_file(self):
         with mock.patch.object(media, "COOKIES_FILE", None), \
-                mock.patch.object(media.yt_dlp, "YoutubeDL", FakeYDL(fail={0})), \
+                mock.patch.object(media.yt_dlp, "YoutubeDL", FakeYDL(fail={0, 1, 2})), \
                 self.assertRaises(UserError) as ctx:
             media._ytdl("https://www.tiktok.com/@a/video/1", {}, "t1")
         self.assertTrue(str(ctx.exception).startswith("TikTok refused the download (HTTP 403). "
