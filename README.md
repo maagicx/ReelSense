@@ -251,6 +251,16 @@ Per-user hourly caps, the longest video allowed and a monthly AudD cap are all s
 
 ReelSense only fetches links on the public internet; links to private or local network addresses are refused. Inside its container it runs as an unprivileged user.
 
+## Responsible use
+
+ReelSense downloads media with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Many platforms' terms of service, YouTube's among them, forbid downloading outside their own apps, so using ReelSense on them may break those terms even though the video is public. The videos themselves are usually copyrighted by their creators.
+
+- **You are responsible** for how your server is used: what is fetched, by whom, and whether that is allowed where you and your users are. This README isn't legal advice.
+- **ReelSense keeps no media.** It downloads a video's audio (or a few frames) to analyse it, then deletes it when the job ends. It returns transcripts, frames and metadata to the person who asked, and it never serves or re-publishes the video.
+- **It doesn't get around protections.** DRM-protected video, private posts and anything behind a paywall or login are out of scope.
+- **Platforms can block you.** Heavy use can get the server's IP address rate-limited or banned. If you give it a `cookies.txt`, the account those cookies belong to can be flagged or suspended, so use a spare account, not your own.
+- **Respect creators.** Use what ReelSense returns for research, accessibility, summaries and quotes, not to re-upload or redistribute their work.
+
 ## Privacy
 
 What leaves the server, and for which tool:
