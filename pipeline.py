@@ -1,6 +1,5 @@
 """The transcription pipeline, without the MCP server around it: probe, then the cached
 transcript or download + Deepgram. Synchronous; runs on the server's worker pool."""
-import os
 import time
 from typing import Optional
 
@@ -8,18 +7,6 @@ import deepgram
 import media
 import transcript_cache
 from media import UserError
-
-
-def _secs(t0: float) -> str:
-    return f"{time.time() - t0:.1f}s"
-
-
-def _mb(path: str) -> str:
-    """The file's size for the log; never fails the job."""
-    try:
-        return f"{os.path.getsize(path) / (1024 * 1024):.1f} MB"
-    except OSError:
-        return "? MB"
 
 
 def _fmt_s(seconds: float) -> str:
@@ -37,7 +24,7 @@ def transcribe_cached(url: str, tag: str, language: Optional[str] = None,
     t0 = time.time()
     media.doing("reading the video's details")
     meta = media.probe(url, tag, with_key=True)
-    media.step(tag, f"read details: {meta.get('platform')}, {meta.get('duration') or 0}s ({_secs(t0)})",
+    media.step(tag, f"read details: {meta.get('platform')}, {meta.get('duration') or 0}s ({media.since(t0)})",
                f" {media.clip(meta.get('title') or '', 60)!r}")
     video_key = meta.pop("video_key", None)
     duration = meta.get("duration") or 0
@@ -55,14 +42,14 @@ def transcribe_cached(url: str, tag: str, language: Optional[str] = None,
     t0 = time.time()
     media.doing("downloading the audio")
     path = media.download_audio(url, tag, section)
-    media.step(tag, f"downloaded audio: {_mb(path)}{', section only' if section else ''} ({_secs(t0)})")
+    media.step(tag, f"downloaded audio: {media.file_mb(path)}{', section only' if section else ''} ({media.since(t0)})")
     t0 = time.time()
     media.doing("transcribing")
     transcript = deepgram.transcribe(path, language)
     speakers = f", {transcript['speakers']} speakers" if transcript.get("speakers") else ""
     media.step(tag, f"transcribed ({deepgram.MODEL}): {len(transcript['segments'])} segments, "
                     f"{len(transcript.get('transcript') or '')} chars, {transcript.get('language') or '?'}"
-                    f"{speakers} ({_secs(t0)})")
+                    f"{speakers} ({media.since(t0)})")
     if section:
         # Deepgram times are from the clip's start; shift them to the video's clock.
         for seg in transcript["segments"]:

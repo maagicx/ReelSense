@@ -101,6 +101,19 @@ def doing(what: str) -> None:
         p.now = what
 
 
+def since(t0: float) -> str:
+    """Seconds since t0, for a step: "1.3s"."""
+    return f"{time.time() - t0:.1f}s"
+
+
+def file_mb(path: str) -> str:
+    """A file's size for a step; never fails the job."""
+    try:
+        return f"{os.path.getsize(path) / (1024 * 1024):.1f} MB"
+    except OSError:
+        return "? MB"
+
+
 def step(tag: str, text: str, log_detail: str = "") -> None:
     """A finished step: to the log under tag (with log_detail, for the admin only) and to
     the tracked job's steps."""

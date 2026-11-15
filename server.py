@@ -856,9 +856,20 @@ def _estimate(duration: float, head: dict, provider) -> dict:
     return {"status": "needs_confirmation", "mode": "full", "estimate": est, "message": msg, **head}
 
 
+MUSIC_SERVICE_NAMES = {"audd": "AudD"}
+
+
+def _track_name(track) -> str:
+    return " - ".join(x for x in (track.artist, track.title) if x) or "a track"
+
+
 def _identify(url: str, mode: str, start: Optional[float], tag: str, provider, confirm: bool = True) -> dict:
+    t0 = time.time()
+    media.doing("reading the video's details")
     meta = media.probe(url, tag, with_key=True)
     duration = meta.get("duration") or 0
+    media.step(tag, f"read details: {meta.get('platform')}, {duration}s ({media.since(t0)})")
+    service = MUSIC_SERVICE_NAMES.get(provider.name, provider.name)
     head = {"video": {k: meta[k] for k in ("title", "url", "platform", "duration") if meta.get(k)},
             "post_credit": _post_credit(meta)}
     key = f"{meta.get('video_key') or meta.get('url')}:{mode}:{int(start) if start is not None else '-'}"
@@ -870,6 +881,7 @@ def _identify(url: str, mode: str, start: Optional[float], tag: str, provider, c
         if _credited_track(cached, meta) or arted or stale:
             ttl = MUSIC_HIT_TTL_S if cached.get("tracks") else MUSIC_MISS_TTL_S
             music_cache.put(key, cached, ttl)
+        media.step(tag, "music result from cache: no new lookup")
         return _assess({**cached, **head, "cached": True, "requests_used": 0}, meta)
     if mode == "full" and not confirm:
         return _estimate(duration, head, provider)
@@ -884,8 +896,14 @@ def _identify(url: str, mode: str, start: Optional[float], tag: str, provider, c
         if left is not None and cost > left:
             raise UserError(f"A full scan of this video costs about {cost} music lookup requests and "
                             f"{left} are left on the server this month. Use mode=\"quick\" instead.")
+        t0 = time.time()
+        media.doing("downloading the audio")
         path = media.download_audio(url, tag, music=True)
+        media.step(tag, f"downloaded audio: {media.file_mb(path)} ({media.since(t0)})")
+        t0 = time.time()
+        media.doing(f"scanning the whole audio with {service}")
         tracks = provider.identify_full(path)
+        media.step(tag, f"{service} full scan: {len(tracks)} tracks, about {cost} requests ({media.since(t0)})")
         used = cost
         music_cache.add_requests(cost)
     else:
@@ -896,17 +914,29 @@ def _identify(url: str, mode: str, start: Optional[float], tag: str, provider, c
                 if not used:
                     raise UserError(MUSIC_BUDGET_GONE)
                 partial = True  # stopped early: not a real miss, so don't cache it as one
+                media.step(tag, "stopped: the server's monthly music lookups ran out")
                 break
+            t1 = time.time()
             if duration and duration <= MUSIC_WHOLE_MAX_S:
-                whole = whole or media.download_audio(url, tag, music=True)
+                if not whole:
+                    media.doing("downloading the audio")
+                    whole = media.download_audio(url, tag, music=True)
+                    media.step(tag, f"downloaded audio: {media.file_mb(whole)} ({media.since(t1)})")
                 clip = media.cut_clip(whole, t, MUSIC_CLIP_S, os.path.join(media.TMP, f"{tag}-c{i}.mp3"))
             else:  # only these 15 s are fetched, so a 2 h video isn't downloaded for 45 s of it
+                media.doing(f"downloading {MUSIC_CLIP_S} s from {media._clock(t)}")
                 clip = media.download_audio(url, f"{tag}-c{i}", {"start": t, "end": t + MUSIC_CLIP_S}, music=True)
+                media.step(tag, f"downloaded {MUSIC_CLIP_S} s from {media._clock(t)} ({media.since(t1)})")
             if not clip:
+                media.step(tag, f"no audio at {media._clock(t)}, skipped")
                 continue
             used += 1
             music_cache.add_requests(1)
+            t1 = time.time()
+            media.doing(f"asking {service} about the clip at {media._clock(t)}")
             tracks = provider.identify_clip(clip)
+            media.step(tag, f"{service} lookup at {media._clock(t)}: "
+                            f"{'matched ' + _track_name(tracks[0]) if tracks else 'no match'} ({media.since(t1)})")
             if tracks:
                 for track in tracks:
                     track.offset_seconds = round(t)
@@ -1012,7 +1042,9 @@ def _music_result(result: dict) -> ToolResult:
     "released_after_video) may be a compilation, cover or namesake; also judge whether the "
     "match suits the post (era, hashtags, genre). credited_track is the track the post's music "
     "tag names, found on Spotify: prefer it over a doubtful match. When the tag is only "
-    "\"original sound\", use find_on_spotify with names from the caption or hashtags."))
+    "\"original sound\", use find_on_spotify with names from the caption or hashtags. "
+    "steps lists what the server did, with timings: use it to tell the user why a call "
+    "failed, was slow or found nothing."))
 async def identify_music(url: str, ctx: Context, mode: str = "quick",
                          start_seconds: Optional[str | float] = None, confirm: bool = False) -> ToolResult:
     mode = (mode or "quick").strip().lower()
@@ -1034,16 +1066,24 @@ async def identify_music(url: str, ctx: Context, mode: str = "quick",
         return {"status": "error", "error": f"Limit of {MAX_JOBS_PER_HOUR} jobs per hour reached."}
     tag = f"mu-{uuid.uuid4().hex[:8]}"
 
+    progress = media.Progress()
+
     def run() -> dict:
+        token = media.track(progress)
         try:
-            return _identify(url, mode, start, tag, provider, confirm)
+            return {**_identify(url, mode, start, tag, provider, confirm), "steps": list(progress.steps)}
         except UserError as exc:
-            return {"status": "error", "error": str(exc)}
+            log.info(f"[{tag}] failed: {exc}")
+            return {"status": "error", "error": str(exc), "steps": list(progress.steps)}
         except Exception:
             log.exception(f"[{tag}] unexpected failure")
-            return {"status": "error", "error": "Internal error while identifying the music."}
+            return {"status": "error", "error": "Internal error while identifying the music.",
+                    "steps": list(progress.steps)}
         finally:
+            media.untrack(token)
             media.cleanup(tag)
+
+    log.info(f"[{tag}] start {name} identify_music {mode} {media.clip(url, 300)}")
 
     waiter = asyncio.wrap_future(POOL.submit(run))
     started = time.monotonic()
@@ -1052,7 +1092,7 @@ async def identify_music(url: str, ctx: Context, mode: str = "quick",
             result = await asyncio.wait_for(asyncio.shield(waiter), HEARTBEAT_S)
             break
         except asyncio.TimeoutError:
-            await ctx.info(f"identifying music… {int(time.monotonic() - started)}s")
+            await ctx.info(f"{progress.status()}… {int(time.monotonic() - started)}s")
     if result.get("cached") and not estimate_only:  # no AudD request: don't count it
         JOBS.refund_slot(uid)
         if mode == "full":
