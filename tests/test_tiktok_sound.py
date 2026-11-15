@@ -32,6 +32,20 @@ class SoundChoice(unittest.TestCase):
         self.assertEqual(kept(pp, info()), ["audio", "h264_540p"])
         self.assertTrue(pp.used)
 
+    def test_own_sound_skips_the_download_pause(self):
+        pp = media._TikTokSound(allow=True)
+        ydl = mock.MagicMock(params={"sleep_interval": 1, "max_sleep_interval": 5})
+        pp.set_downloader(ydl)
+        kept(pp, info())
+        self.assertEqual((ydl.params["sleep_interval"], ydl.params["max_sleep_interval"]), (0, 0))
+
+    def test_video_download_keeps_the_pause(self):
+        pp = media._TikTokSound(allow=True)
+        ydl = mock.MagicMock(params={"sleep_interval": 1, "max_sleep_interval": 5})
+        pp.set_downloader(ydl)
+        kept(pp, info(artists=["tiff"]))
+        self.assertEqual((ydl.params["sleep_interval"], ydl.params["max_sleep_interval"]), (1, 5))
+
     def test_handle_match_counts(self):
         pp = media._TikTokSound(allow=True)
         kept(pp, info(channel="Someone", artists=["DYLAN.PAGE"]))

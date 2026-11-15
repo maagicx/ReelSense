@@ -752,7 +752,8 @@ class _TikTokSound(yt_dlp.postprocessor.PostProcessor):
     """pre_process (before format selection): keeps TikTok's "audio" format only when
     allowed and it is the creator's own sound, else removes it. "audio" is the post's
     sound from TikTok's music servers: an mp3 that downloads first time, where the video
-    servers refuse about half the links. With a licensed track attached it is the whole
+    servers refuse about half the links, and it's fetched without the pause before
+    downloads. With a licensed track attached it is the whole
     song (187 s of Mozart for a 50 s video with a voiceover), not the video's audio."""
     def __init__(self, allow: bool):
         super().__init__()
@@ -765,6 +766,11 @@ class _TikTokSound(yt_dlp.postprocessor.PostProcessor):
                      and any(f.get("format_id") == "audio" for f in formats))
         if not self.used:
             info["formats"] = [f for f in formats if f.get("format_id") != "audio"]
+        elif self._downloader:
+            # One small file from the music servers: skip the 1-5 s pause before the
+            # download, which is there to pace video downloads. yt-dlp reads it when the
+            # download starts, after this hook.
+            self._downloader.params.update(sleep_interval=0, max_sleep_interval=0)
         return [], info
 
 
