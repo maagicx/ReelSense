@@ -171,13 +171,19 @@ class Jobs:
         jid = uuid.uuid4().hex[:16]
         with self._lock:
             self._evict(time.time())
-            self._jobs[jid] = {"user": user, "status": "running", "started": time.time()}
+            self._jobs[jid] = {"user": user, "status": "running", "started": time.time(),
+                               "progress": media.Progress()}
         return jid
 
     def finish(self, jid: str, **fields) -> None:
         with self._lock:
             if jid in self._jobs:
                 self._jobs[jid].update(fields, expires=time.time() + JOB_RESULT_TTL_S)
+
+    def progress(self, jid: str) -> media.Progress:
+        with self._lock:
+            job = self._jobs.get(jid)
+            return job["progress"] if job else media.Progress()
 
     def get(self, jid: str) -> Optional[dict]:
         with self._lock:
@@ -206,10 +212,12 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
     result: dict = {}
     cached = failed = False
     log.info(f"[{jid}] start {name} transcribe {media.clip(url, 300)}")
+    progress = JOBS.progress(jid)
+    token = media.track(progress)
     try:
         result = pipeline.transcribe_cached(url, jid, language, start, end, chapter, MAX_DURATION_S)
         cached = result.pop("cached", False)
-        result = {**result, "status": "done"}
+        result = {**result, "steps": list(progress.steps), "status": "done"}
         JOBS.finish(jid, status="done", result=result)
         return result
     except Exception as exc:
@@ -220,8 +228,9 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
         else:
             log.exception(f"[{jid}] unexpected failure")
         JOBS.finish(jid, status="error", error=err)
-        return {"status": "error", "error": err}
+        return {"status": "error", "error": err, "steps": list(progress.steps)}
     finally:
+        media.untrack(token)
         media.cleanup(jid)
         log.info(
             f"[mcp] {name} transcribe {result.get('platform', media.platform_of(url))} "
@@ -417,7 +426,9 @@ async def transcribe_video(url: str, ctx: Context, language: Optional[str] = Non
     h:mm:ss, e.g. "1:02:30") or a chapter title; only that part is downloaded, the
     duration limit applies to its length (so parts of long streams work), and times stay
     on the full video's clock. Long videos may return {job_id, status:"running"}: then
-    call get_transcript(job_id) with the same full/segments."""
+    call get_transcript(job_id) with the same full/segments. steps lists what the server
+    did, with timings (and a retry with cookies, if one was needed): use it to tell the
+    user why a call failed or was slow."""
     try:
         start_s, end_s = media.parse_time(start), media.parse_time(end)
     except UserError as exc:
@@ -428,7 +439,7 @@ async def transcribe_video(url: str, ctx: Context, language: Optional[str] = Non
     jid = JOBS.create(uid)
     fut: Future = POOL.submit(_run_job, jid, name, url, language, start_s, end_s,
                               (chapter or "").strip() or None)
-    result = await _await_job(fut, ctx)
+    result = await _await_job(fut, ctx, JOBS.progress(jid))
     if result is None:
         return {
             "job_id": jid,
@@ -438,9 +449,10 @@ async def transcribe_video(url: str, ctx: Context, language: Optional[str] = Non
     return await asyncio.to_thread(_video_result, result, full, segments)
 
 
-async def _await_job(fut: Future, ctx: Context) -> Optional[dict]:
+async def _await_job(fut: Future, ctx: Context, progress: media.Progress) -> Optional[dict]:
     """A transcription job's result, or None if it's still running after MAX_WAIT_S. Sends
-    a progress line every HEARTBEAT_S meanwhile, to keep the connection alive."""
+    what the job is doing every HEARTBEAT_S meanwhile, which also keeps the connection
+    alive (clients that show MCP log messages show these)."""
     waiter = asyncio.wrap_future(fut)
     started = time.monotonic()
     deadline = started + MAX_WAIT_S
@@ -451,7 +463,7 @@ async def _await_job(fut: Future, ctx: Context) -> Optional[dict]:
         try:
             return await asyncio.wait_for(asyncio.shield(waiter), min(HEARTBEAT_S, remaining))
         except asyncio.TimeoutError:
-            await ctx.info(f"transcribing… {int(time.monotonic() - started)}s")
+            await ctx.info(f"{progress.status()}… {int(time.monotonic() - started)}s")
 
 
 @mcp.tool(app=CARD_APP, output_schema=None)
@@ -464,8 +476,9 @@ async def get_transcript(job_id: str, full: bool = False, segments: bool = False
     if job["status"] == "done":
         return await asyncio.to_thread(_video_result, job["result"], full, segments)
     if job["status"] == "error":
-        return {"status": "error", "error": job["error"]}
-    return {"job_id": job_id, "status": "running", "elapsed_s": int(time.time() - job["started"])}
+        return {"status": "error", "error": job["error"], "steps": list(job["progress"].steps)}
+    return {"job_id": job_id, "status": "running", "elapsed_s": int(time.time() - job["started"]),
+            "now": job["progress"].status(), "steps": list(job["progress"].steps)}
 
 
 @mcp.tool(app=CARD_APP, output_schema=None)
@@ -644,14 +657,15 @@ async def find_on_screen(url: str, query: str, ctx: Context, max_frames: int = 5
     if not JOBS.take_slot(uid):  # one slot for transcript and frames together
         return error(f"limit of {MAX_JOBS_PER_HOUR} transcriptions per hour reached.")
     jid = JOBS.create(uid)
-    result = await _await_job(POOL.submit(_run_job, jid, name, url, None), ctx)
+    result = await _await_job(POOL.submit(_run_job, jid, name, url, None), ctx, JOBS.progress(jid))
     if result is None:
         text = json.dumps({"job_id": jid, "status": "running", "message": (
             "Still transcribing (a long video). Call find_on_screen again with the same arguments "
             "in a minute: the transcript is kept, so it won't be transcribed again.")})
         return ToolResult(content=[TextContent(type="text", text=text)])
     if result.get("status") == "error":
-        return error(result["error"])
+        steps = "; ".join(result.get("steps") or [])
+        return error(result["error"] + (f" (steps: {steps})" if steps else ""))
 
     segments = result.get("segments") or []
     duration = result.get("duration") or (segments[-1]["end"] if segments else None)

@@ -6,6 +6,7 @@ Failures surface as UserError with a short message fit for a tool result.
 import base64
 import glob
 import html
+import contextvars
 import ipaddress
 import json
 import logging
@@ -58,6 +59,47 @@ _TIKTOK_HEADERS = {
 
 class UserError(Exception):
     """A failure whose message is safe and useful to return to the caller."""
+
+
+# ---------------------------------------------------------------- progress
+
+class Progress:
+    """A job's finished steps and what it is doing now: returned to the user with the
+    result, and sent to the client while it waits. Only that job's own steps, never the
+    server log, and nothing meant for the admin (cookie advice, raw errors)."""
+    def __init__(self):
+        self.steps: list[str] = []
+        self.now: Optional[str] = None
+
+    def status(self) -> str:
+        return self.now or (self.steps[-1] if self.steps else "starting")
+
+
+# Set by the server in the job's worker thread; None outside a tracked job.
+_progress: contextvars.ContextVar[Optional[Progress]] = contextvars.ContextVar("progress", default=None)
+
+
+def track(progress: Progress) -> contextvars.Token:
+    return _progress.set(progress)
+
+
+def untrack(token: contextvars.Token) -> None:
+    _progress.reset(token)
+
+
+def doing(what: str) -> None:
+    """What the job is doing now, for the client's progress line."""
+    if p := _progress.get():
+        p.now = what
+
+
+def step(tag: str, text: str, log_detail: str = "") -> None:
+    """A finished step: to the log under tag (with log_detail, for the admin only) and to
+    the tracked job's steps."""
+    log.info(f"[{tag}] {text}{log_detail}")
+    if p := _progress.get():
+        p.steps.append(text)
+        p.now = None
 
 
 # ---------------------------------------------------------------- URLs
@@ -221,8 +263,8 @@ def _ytdl(target: str, opts: dict, tag: str, download: bool = False) -> dict:
             except Exception as exc:
                 if i == len(jars) - 1:
                     raise _failure(exc, target, bool(jar), logger.stale_cookies) from exc
-                log.info(f"[yt-dlp] {tag}: {_site(target)} without cookies failed, retrying with cookies "
-                         f"({str(exc)[:200]})")
+                step(tag, f"{_site(target)} without cookies failed, retrying with cookies",
+                     f" ({str(exc)[:200]})")
     finally:
         if cookies:
             _rm(cookies)

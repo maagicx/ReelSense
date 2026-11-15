@@ -1,6 +1,5 @@
 """The transcription pipeline, without the MCP server around it: probe, then the cached
 transcript or download + Deepgram. Synchronous; runs on the server's worker pool."""
-import logging
 import os
 import time
 from typing import Optional
@@ -9,8 +8,6 @@ import deepgram
 import media
 import transcript_cache
 from media import UserError
-
-log = logging.getLogger("transcribe-mcp")
 
 
 def _secs(t0: float) -> str:
@@ -38,9 +35,10 @@ def transcribe_cached(url: str, tag: str, language: Optional[str] = None,
     or chapter) is always transcribed fresh. Adds "cached": True on a cache hit. Raises
     UserError. Leaves temp files under tag for media.cleanup."""
     t0 = time.time()
+    media.doing("reading the video's details")
     meta = media.probe(url, tag, with_key=True)
-    log.info(f"[{tag}] probed: {meta.get('platform')} {meta.get('duration') or 0}s "
-             f"{media.clip(meta.get('title') or '', 60)!r} ({_secs(t0)})")
+    media.step(tag, f"read details: {meta.get('platform')}, {meta.get('duration') or 0}s ({_secs(t0)})",
+               f" {media.clip(meta.get('title') or '', 60)!r}")
     video_key = meta.pop("video_key", None)
     duration = meta.get("duration") or 0
     section = media.resolve_section(meta, start, end, chapter)
@@ -52,18 +50,19 @@ def transcribe_cached(url: str, tag: str, language: Optional[str] = None,
                         "Pass start and end (or a chapter) to transcribe part of it.")
     cache_key = transcript_cache.key(video_key, language) if video_key and not section else None
     if cache_key and (hit := transcript_cache.get(cache_key)):
-        log.info(f"[{tag}] transcript from cache")
+        media.step(tag, "transcript from cache")
         return {**meta, **hit, "cached": True}
     t0 = time.time()
+    media.doing("downloading the audio")
     path = media.download_audio(url, tag, section)
-    log.info(f"[{tag}] downloaded audio {_mb(path)}"
-             f"{' (section)' if section else ''} ({_secs(t0)})")
+    media.step(tag, f"downloaded audio: {_mb(path)}{', section only' if section else ''} ({_secs(t0)})")
     t0 = time.time()
+    media.doing("transcribing")
     transcript = deepgram.transcribe(path, language)
     speakers = f", {transcript['speakers']} speakers" if transcript.get("speakers") else ""
-    log.info(f"[{tag}] transcribed ({deepgram.MODEL}): {len(transcript['segments'])} segments, "
-             f"{len(transcript.get('transcript') or '')} chars, {transcript.get('language') or '?'}"
-             f"{speakers} ({_secs(t0)})")
+    media.step(tag, f"transcribed ({deepgram.MODEL}): {len(transcript['segments'])} segments, "
+                    f"{len(transcript.get('transcript') or '')} chars, {transcript.get('language') or '?'}"
+                    f"{speakers} ({_secs(t0)})")
     if section:
         # Deepgram times are from the clip's start; shift them to the video's clock.
         for seg in transcript["segments"]:
