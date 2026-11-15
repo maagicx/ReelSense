@@ -8,7 +8,8 @@ import os
 import sqlite3
 import threading
 import time
-from typing import Optional
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 PATH = os.environ.get("TRANSCRIPT_CACHE_PATH") or os.path.join(
     os.environ.get("FASTMCP_HOME") or os.environ.get("TMP_DIR", "/tmp"), "transcript_cache.sqlite")
@@ -24,10 +25,18 @@ def key(video_key: str, language: Optional[str]) -> str:
     return f"{video_key}:{(language or 'auto').strip().lower()}"
 
 
-def _db() -> sqlite3.Connection:
+@contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
+    """A connection that commits (or rolls back) and is always closed: a with-block on
+    the connection alone only ends the transaction, and an open handle locks the file on
+    Windows."""
     con = sqlite3.connect(PATH, timeout=10)
-    con.execute("CREATE TABLE IF NOT EXISTS transcripts (key TEXT PRIMARY KEY, value TEXT, expires REAL)")
-    return con
+    try:
+        with con:
+            con.execute("CREATE TABLE IF NOT EXISTS transcripts (key TEXT PRIMARY KEY, value TEXT, expires REAL)")
+            yield con
+    finally:
+        con.close()
 
 
 def get(k: str) -> Optional[dict]:

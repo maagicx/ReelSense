@@ -1,6 +1,6 @@
 # Third-party notices
 
-ReelSense's own code is under the [MIT licence](LICENSE). It contains no code copied from other projects. The Docker image it builds installs the following, each under its own licence:
+ReelSense's own code is under the [MIT licence](LICENSE). The Docker image it builds installs the following, each under its own licence:
 
 | Component | Licence | Source |
 |---|---|---|
@@ -14,8 +14,8 @@ ReelSense's own code is under the [MIT licence](LICENSE). It contains no code co
 | Requests | Apache-2.0 | https://github.com/psf/requests |
 | Python and Debian base image (`python:3.12-slim`) | PSF-2.0 and Debian package licences | https://hub.docker.com/_/python |
 
-`requirements.txt` lists every Python package installed, at exact versions; each one's licence is in its package metadata.
+`requirements.txt` locks ReelSense's application dependencies. yt-dlp and its optional extras are installed separately and may vary between image builds. Inspect a built image with `pip freeze` and an SBOM for its exact contents.
 
-This repository publishes source code only. Anyone who publishes a built image redistributes all of the above and should keep their licence notices with it. `docker scout sbom <image>` lists what an image contains.
+This repository publishes source code only. Anyone who distributes a built image must comply with each component's licence, including preserving required notices and providing corresponding source code, licence texts or build information where required. `docker scout sbom <image>` lists what an image contains.
 
 ReelSense calls these services' APIs, under their own terms, not a software licence: Deepgram, AudD, Voyage AI, Spotify and Apple's iTunes Search API.

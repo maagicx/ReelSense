@@ -13,7 +13,8 @@ import os
 import sqlite3
 import threading
 import time
-from typing import Optional
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 import requests
 
@@ -76,11 +77,19 @@ def _key(texts: list[str]) -> str:
     return f"{MODEL}:{DIMENSION}:{digest}"
 
 
-def _db() -> sqlite3.Connection:
+@contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
+    """A connection that commits (or rolls back) and is always closed: a with-block on
+    the connection alone only ends the transaction, and an open handle locks the file on
+    Windows."""
     con = sqlite3.connect(transcript_cache.PATH, timeout=10)
-    con.execute("CREATE TABLE IF NOT EXISTS embeddings (key TEXT PRIMARY KEY, n INTEGER, dim INTEGER, "
-                "vectors BLOB, expires REAL)")
-    return con
+    try:
+        with con:
+            con.execute("CREATE TABLE IF NOT EXISTS embeddings (key TEXT PRIMARY KEY, n INTEGER, dim INTEGER, "
+                        "vectors BLOB, expires REAL)")
+            yield con
+    finally:
+        con.close()
 
 
 def _load(key: str, n: int) -> Optional[list[list[float]]]:

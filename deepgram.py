@@ -5,15 +5,22 @@ from typing import Optional
 
 import requests
 
-from media import UserError
+from media import UserError, clip
 
 API_URL = "https://api.deepgram.com/v1/listen"
 API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 MODEL = os.environ.get("DEEPGRAM_MODEL", "nova-3")
-DIARIZE = os.environ.get("DEEPGRAM_DIARIZE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _flag(name: str, default: str = "1") -> bool:
+    """An on/off setting: 0, false, no and off (any case) turn it off."""
+    return os.environ.get(name, default).strip().lower() not in ("0", "false", "no", "off")
+
+
+DIARIZE = _flag("DEEPGRAM_DIARIZE")
 # Keep the audio out of Deepgram's Model Improvement Program (training). Since March 2026
 # opting out doesn't change Pay-as-you-go or Growth rates.
-MIP_OPT_OUT = os.environ.get("DEEPGRAM_MIP_OPT_OUT", "1").strip().lower() not in ("0", "false", "no", "off")
+MIP_OPT_OUT = _flag("DEEPGRAM_MIP_OPT_OUT")
 ATTEMPTS = 4
 TIMEOUT_S = 600
 
@@ -45,16 +52,38 @@ def transcribe(path: str, language: Optional[str] = None) -> dict:
 
     if resp is None:
         raise UserError("Transcription service unreachable. Try again shortly.")
-    if resp.status_code == 400 and language:
-        raise UserError(f"Deepgram rejected language '{language}' for model {MODEL}.")
-    if resp.status_code in (401, 403):
-        raise UserError("Transcription service rejected the server's API key.")
-    if resp.status_code == 402:
-        raise UserError("Transcription service account is out of credit.")
     if not resp.ok:
-        raise UserError(f"Transcription failed (Deepgram HTTP {resp.status_code}).")
+        raise _error(resp, language)
 
     return shape(resp.json())
+
+
+def _reason(resp) -> str:
+    """Deepgram's own words for a failed request ({err_code, err_msg, request_id}), or ""."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    return clip(str(body.get("err_msg") or body.get("message") or "").strip(), 200)
+
+
+def _error(resp, language: Optional[str]) -> UserError:
+    code, reason = resp.status_code, _reason(resp)
+    said = f": {reason}" if reason else "."
+    if code == 400 and language and "language" in reason.lower():
+        return UserError(f"Deepgram rejected language '{language}' for model {MODEL}{said}")
+    if code == 400:
+        return UserError(f"Deepgram rejected the request (HTTP 400){said}")
+    if code == 401:
+        return UserError("Transcription service rejected the server's API key.")
+    if code == 402:
+        return UserError("Transcription service account is out of credit.")
+    if code == 403:
+        return UserError("Deepgram refused the request (HTTP 403): the server's API key may lack "
+                         f"permission for this model or feature{said}")
+    return UserError(f"Transcription failed (Deepgram HTTP {code}){said}")
 
 
 _SENTENCE_END = (".", "?", "!", "…", "。", "？", "！")
