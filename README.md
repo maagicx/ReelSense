@@ -7,6 +7,7 @@ It can also:
 - read YouTube comments
 - take still frames Claude can look at (slides, on-screen text)
 - identify the music in a video and find tracks on Spotify or Apple Music
+- tell Claude what it did on each job, step by step with timings, so Claude can explain a failure or a slow call
 
 In clients that support MCP Apps (claude.ai), videos, channels, frames and music show as cards.
 
@@ -32,6 +33,8 @@ Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ─
 | `find_on_spotify` / `find_on_apple_music` | Finds a track by name. |
 | `help` | A user guide: what to ask, limits, and usage this hour. |
 | `health` | Versions, settings and who you're signed in as. |
+
+`transcribe_video`, `get_transcript`, `find_on_screen` and `identify_music` also return `steps`: what the server did for that job, with timings, e.g. `"downloaded audio: 0.3 MB (1.2s)"` or `"AudD lookup at 0:04: no match (0.6s)"`. Steps cover only the caller's own job; video titles, raw yt-dlp errors and admin advice stay in the server log. While a job runs, the server's progress messages name the current stage ("downloading the audio… 12s"), for clients that show MCP log messages.
 
 ## Screenshots
 
@@ -195,7 +198,7 @@ Set the rest of the required values:
 
 If a required value is missing, the server refuses to start and its log names the value.
 
-Optional: some platforms need a logged-in session (Instagram; YouTube for age-restricted or members-only videos, or when it asks for a bot check; TikTok, whose video servers can refuse downloads without one). Export your browser's cookies in Netscape format to `cookies/cookies.txt`, signed in to each site you need. YouTube is tried without cookies first and with them only if that fails: YouTube invalidates exported cookies quickly, and stale ones would otherwise break public videos too. TikTok gets cookies straight away. To make cookies last, export them from a private window and then close it.
+Optional: some platforms need a logged-in session (Instagram; YouTube for age-restricted or members-only videos, or when it asks for a bot check; private or login-only posts anywhere). Export your browser's cookies in Netscape format to `cookies/cookies.txt`, signed in to each site you need. YouTube is tried without cookies first and with them only if that fails: YouTube invalidates exported cookies quickly, and stale ones would otherwise break public videos too. Other sites get cookies straight away. To make cookies last, export them from a private window and then close it.
 
 ### 5. Start
 
@@ -228,10 +231,19 @@ Then try: *"Transcribe https://www.youtube.com/watch?v=… and summarise it."* I
 ## Keep it running
 
 - **Update ReelSense:** `git pull`, then the same `docker compose … up -d --build` command as in step 5.
-- **Refresh yt-dlp weekly.** Platforms break it often; an `HTTP Error 403` in the `[yt-dlp]` log lines is the usual sign (refresh `cookies.txt` too, if you use one). Run `docker compose build --build-arg YTDLP_BUILD=$(date +%s)`, then `docker compose up -d`. Windows users of the scripts can schedule `update.bat` instead. It checks that the new build starts and can still read a real video, and rolls back to the previous one if not.
+- **Refresh yt-dlp weekly.** Platforms break it often; an `HTTP Error 403` in the `[yt-dlp]` log lines that keeps coming back is the usual sign (refresh `cookies.txt` too, if you use one). Occasional TikTok 403s are normal, see below. Run `docker compose build --build-arg YTDLP_BUILD=$(date +%s)`, then `docker compose up -d`. Windows users of the scripts can schedule `update.bat` instead. It checks that the new build starts and can still read a real video, and rolls back to the previous one if not.
+- **Read the log:** `docker compose logs -f reelsense` (or `docker logs -f reelsense-server` with the scripts). Each job logs its start with the user and the link, each stage with its timing, and `failed:` with the reason the user was given, all under one job id that the `[yt-dlp]` lines for that job share. A `[cookies]` line means the server's cookies need refreshing. Because links are logged next to sign-in names, anyone who can read the log can see what each user looked at.
 - **Users:** edit `ALLOWED_USERS`, then run `docker compose up -d`. Compose recreates the container when `.env` changes.
 - **Python dependencies** are locked to exact versions in `requirements.txt`, so a rebuild installs what was tested. To update them, edit `requirements.in` if needed, run `./lock.sh`, then rebuild and test. Deno and cloudflared are pinned too: change the tag in the `Dockerfile`, `tunnel.bat` or `docker-compose.yml`.
 - **The host port** (8010) is published to this machine only, for Tailscale Funnel, a local proxy or a health check. The Cloudflare Tunnel doesn't need it. If a reverse proxy on another machine has to reach the server, set `HOST_BIND=0.0.0.0` in `.env` (Compose).
+
+## TikTok
+
+TikTok's video servers refuse some download links at random (HTTP 403), with or without cookies; in November 2026 it was about half of them. Its music servers don't. So ReelSense:
+
+- **Downloads the post's sound file when it is the creator's own** (the sound's artist is the post's channel or handle). That file is the video's audio, fetched in one small request with no pause, usually in about a second. The steps say "used the post's own sound file". It must match the video's length within 2 seconds, or ReelSense downloads the video instead.
+- **Downloads the video for anything else.** A licensed song or someone else's sound is often not what the video plays: a 50-second voice-over can carry a 3-minute song as its sound.
+- **Retries a refused video link with a fresh one**, up to 3 tries in total (`TIKTOK_LINK_ATTEMPTS`), 2 seconds apart. Each retry shows in the steps. Only when all of them are refused is the user told "TikTok refused the download (HTTP 403)".
 
 ## Limits and costs
 
