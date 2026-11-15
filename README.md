@@ -11,6 +11,8 @@ It can also:
 
 In clients that support MCP Apps (claude.ai), videos, channels, frames and music show as cards.
 
+> **Before you run it:** downloading from a platform may break its terms, and the videos belong to their creators. Read [Responsible use](#responsible-use): you are responsible for what your server fetches.
+
 ```
 Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ──▶ container :8010
                      yt-dlp → ffmpeg → Deepgram → transcript
@@ -253,19 +255,31 @@ ReelSense only fetches links on the public internet; links to private or local n
 
 ## Responsible use
 
-ReelSense downloads media with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Many platforms' terms of service, YouTube's among them, forbid downloading outside their own apps, so using ReelSense on them may break those terms even though the video is public. The videos themselves are usually copyrighted by their creators.
+ReelSense downloads media and metadata from other websites with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Two separate permissions are involved. yt-dlp's licence lets you use its software. It does not give you permission to access, download, copy, transcribe, store or redistribute anyone's videos. That depends on the site's terms and on the rights in the video, and many sites' terms, YouTube's among them, forbid downloading outside their own apps even for public videos.
 
-- **You are responsible** for how your server is used: what is fetched, by whom, and whether that is allowed where you and your users are. This README isn't legal advice.
-- **ReelSense keeps no media.** It downloads a video's audio (or a few frames) to analyse it, then deletes it when the job ends. It returns transcripts, frames and metadata to the person who asked, and it never serves or re-publishes the video.
-- **It doesn't get around protections.** DRM-protected video, private posts and anything behind a paywall or login are out of scope.
-- **Platforms can block you.** Heavy use can get the server's IP address rate-limited or banned. If you give it a `cookies.txt`, the account those cookies belong to can be flagged or suspended, so use a spare account, not your own.
-- **Respect creators.** Use what ReelSense returns for research, accessibility, summaries and quotes, not to re-upload or redistribute their work.
+If you run a ReelSense server, you are responsible for making sure its use complies with:
+
+- the terms and policies of the sites the videos come from;
+- copyright, privacy, publicity and other rights in the content;
+- any access restrictions on the content; and
+- the laws where you and your users are.
+
+Only process content that you own, are authorised to use, is licensed for your use, or may otherwise lawfully be processed. This README isn't legal advice, and a disclaimer can't make a prohibited use lawful.
+
+- **No media is kept.** ReelSense downloads a video's audio (or a few frames) to analyse it and deletes it when the job ends. It returns transcripts, frames and metadata to the person who asked, and never serves or re-publishes the video.
+- **No getting around protections.** Don't use ReelSense to bypass DRM, paywalls, private access controls or other technical protection measures. Private, members-only and login-only content is out of scope.
+- **Cookies are for bot checks on public videos only.** If you give the server a `cookies.txt`, use a spare account of your own, never someone else's session, and don't share the file. Having access through an account doesn't mean you may download or transcribe what it can see. The account can also be flagged or suspended.
+- **Platforms can block you.** Heavy use can get the server's IP address rate-limited or banned.
+- **Respect creators.** Use what ReelSense returns for research, accessibility, summaries and quotes, not to re-upload or redistribute their work or full transcripts of it.
+- **The paid services have their own terms.** By using Deepgram, AudD, Voyage AI, Spotify and Apple's search API you accept their terms as the operator. Deepgram and AudD, for example, require you to have the rights to the audio you send them.
+
+ReelSense and its maintainers are not affiliated with or endorsed by YouTube, TikTok, Instagram, Facebook, X, Vimeo or any other supported site. That a site works with ReelSense doesn't mean every use of it through ReelSense is permitted.
 
 ## Privacy
 
 What leaves the server, and for which tool:
 
-- **Deepgram** gets the audio of each video you transcribe (`transcribe_video`, and `find_on_screen` when the video isn't transcribed yet).
+- **Deepgram** gets the audio of each video you transcribe (`transcribe_video`, and `find_on_screen` when the video isn't transcribed yet). ReelSense asks Deepgram not to use it for model training (`DEEPGRAM_MIP_OPT_OUT=1`, the default).
 - **AudD** gets short audio clips from the video (`identify_music`).
 - **Voyage AI**, only if `VOYAGE_API_KEY` is set, gets the transcript's lines and your `find_on_screen` query.
 - **Spotify** and **Apple Music** get the track and artist names to look up.
@@ -287,4 +301,4 @@ Don't delete the whole volume unless you also want everyone signed out.
 
 ## Licence
 
-[MIT](LICENSE)
+[MIT](LICENSE), for ReelSense's own code. The tools and libraries it installs keep their own licences: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

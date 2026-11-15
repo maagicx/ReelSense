@@ -11,6 +11,9 @@ API_URL = "https://api.deepgram.com/v1/listen"
 API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 MODEL = os.environ.get("DEEPGRAM_MODEL", "nova-3")
 DIARIZE = os.environ.get("DEEPGRAM_DIARIZE", "1").strip().lower() not in ("0", "false", "no", "off")
+# Keep the audio out of Deepgram's Model Improvement Program (training). Since March 2026
+# opting out doesn't change Pay-as-you-go or Growth rates.
+MIP_OPT_OUT = os.environ.get("DEEPGRAM_MIP_OPT_OUT", "1").strip().lower() not in ("0", "false", "no", "off")
 ATTEMPTS = 4
 TIMEOUT_S = 600
 
@@ -20,6 +23,8 @@ def transcribe(path: str, language: Optional[str] = None) -> dict:
     params = {"model": MODEL, "smart_format": "true", "utterances": "true", "punctuate": "true"}
     if DIARIZE:
         params["diarize"] = "true"
+    if MIP_OPT_OUT:
+        params["mip_opt_out"] = "true"
     if language:
         params["language"] = language
     else:

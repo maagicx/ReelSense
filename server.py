@@ -1244,6 +1244,7 @@ comment requests ({MAX_MUSIC_FULL_PER_HOUR} of them full music scans), {MAX_META
 lookups, lists, searches and channel lookups, {MAX_SPOTIFY_PER_HOUR} Spotify searches and {MAX_SPOTIFY_PER_HOUR} \
 Apple Music searches.
 - You sign in with your {signin.LABEL} account. Access is granted by the server's admin.
+- Only use it on videos you may process: the site's terms and the creator's rights still apply.
 """
 
 

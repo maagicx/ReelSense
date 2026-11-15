@@ -128,7 +128,8 @@ def consent_html(*, client_id, redirect_uri, scopes, txn_id, csrf_token, client_
     </form>
   </div>
   <p class="foot">{SERVER_TITLE} is a private server run by {OWNER}, not by Anthropic. Next you sign in
-    with your {SIGNIN_LABEL} account; access is granted by {OWNER}.</p>
+    with your {SIGNIN_LABEL} account; access is granted by {OWNER}. Only use it on videos you may process:
+    the site's terms and the creator's rights still apply.</p>
 </main>
 </body>
 </html>"""
