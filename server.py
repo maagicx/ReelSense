@@ -204,7 +204,8 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
              chapter: Optional[str] = None) -> dict:
     t0 = time.time()
     result: dict = {}
-    cached = False
+    cached = failed = False
+    log.info(f"[{jid}] start {name} transcribe {media.clip(url, 300)}")
     try:
         result = pipeline.transcribe_cached(url, jid, language, start, end, chapter, MAX_DURATION_S)
         cached = result.pop("cached", False)
@@ -213,7 +214,10 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
         return result
     except Exception as exc:
         err = str(exc) if isinstance(exc, UserError) else "Internal error while transcribing."
-        if not isinstance(exc, UserError):
+        failed = True
+        if isinstance(exc, UserError):
+            log.info(f"[{jid}] failed: {err}")
+        else:
             log.exception(f"[{jid}] unexpected failure")
         JOBS.finish(jid, status="error", error=err)
         return {"status": "error", "error": err}
@@ -221,7 +225,7 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
         media.cleanup(jid)
         log.info(
             f"[mcp] {name} transcribe {result.get('platform', media.platform_of(url))} "
-            f"{result.get('duration') or 0}s{' cached' if cached else ''} "
+            f"{result.get('duration') or 0}s{' cached' if cached else ''}{' error' if failed else ''} "
             f"{int((time.time() - t0) * 1000)}ms"
         )
 
