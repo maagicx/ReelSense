@@ -211,7 +211,7 @@ def _run_job(jid: str, name: str, url: str, language: Optional[str],
     t0 = time.time()
     result: dict = {}
     cached = failed = False
-    log.info(f"[{jid}] start {name} transcribe {media.clip(url, 300)}")
+    log.info(f"[{jid}] start {name} transcribe {media.log_url(url)}")
     progress = JOBS.progress(jid)
     token = media.track(progress)
     try:
@@ -1083,7 +1083,7 @@ async def identify_music(url: str, ctx: Context, mode: str = "quick",
             media.untrack(token)
             media.cleanup(tag)
 
-    log.info(f"[{tag}] start {name} identify_music {mode} {media.clip(url, 300)}")
+    log.info(f"[{tag}] start {name} identify_music {mode} {media.log_url(url)}")
 
     waiter = asyncio.wrap_future(POOL.submit(run))
     started = time.monotonic()

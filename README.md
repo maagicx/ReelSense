@@ -211,7 +211,7 @@ The first build takes a few minutes. Then check:
 - `docker compose logs -f reelsense` should show `transcribe-mcp on :8010 … auth=google allowlist=on`. If it says `FATAL:` instead, fix the value it names in `.env` and run the same command again.
 - `https://<your-host>/healthz` in a browser should show `ok`. If it doesn't, the problem is the tunnel or Funnel, not the server.
 
-Sign-in state and the music cache live in the Docker volume `reelsense-data`. Keep it: deleting it signs everyone out.
+Sign-in state and the transcript and music caches live in the Docker volume `reelsense-data`. Keep it: deleting it signs everyone out.
 
 On Windows you can also use the scripts instead of Compose: `build.bat`, then `run.bat`, and `tunnel.bat` for the Cloudflare Tunnel (option A; it reads `CLOUDFLARE_TUNNEL_TOKEN` from `.env` and runs cloudflared in its own container). They expect `cookies.txt` next to them. `deploy.bat` pulls, builds and restarts in one step; `update.bat` refreshes yt-dlp. The scripts' container is called `reelsense-server`, and its data lives in the volume `transcribe-mcp-data` (named before the rename; keep it).
 
@@ -232,7 +232,7 @@ Then try: *"Transcribe https://www.youtube.com/watch?v=… and summarise it."* I
 
 - **Update ReelSense:** `git pull`, then the same `docker compose … up -d --build` command as in step 5.
 - **Refresh yt-dlp weekly.** Platforms break it often; an `HTTP Error 403` in the `[yt-dlp]` log lines that keeps coming back is the usual sign (refresh `cookies.txt` too, if you use one). Occasional TikTok 403s are normal, see below. Run `docker compose build --build-arg YTDLP_BUILD=$(date +%s)`, then `docker compose up -d`. Windows users of the scripts can schedule `update.bat` instead. It checks that the new build starts and can still read a real video, and rolls back to the previous one if not.
-- **Read the log:** `docker compose logs -f reelsense` (or `docker logs -f reelsense-server` with the scripts). Each job logs its start with the user and the link, each stage with its timing, and `failed:` with the reason the user was given, all under one job id that the `[yt-dlp]` lines for that job share. A `[cookies]` line means the server's cookies need refreshing. Because links are logged next to sign-in names, anyone who can read the log can see what each user looked at.
+- **Read the log:** `docker compose logs -f reelsense` (or `docker logs -f reelsense-server` with the scripts). Each job logs its start with the user and the link (without its query string, apart from the video's ID), each stage with its timing, and `failed:` with the reason the user was given, all under one job id that the `[yt-dlp]` lines for that job share. A `[cookies]` line means the server's cookies need refreshing. Because links are logged next to sign-in names, anyone who can read the log can see what each user looked at.
 - **Users:** edit `ALLOWED_USERS`, then run `docker compose up -d`. Compose recreates the container when `.env` changes.
 - **Python dependencies** are locked to exact versions in `requirements.txt`, so a rebuild installs what was tested. To update them, edit `requirements.in` if needed, run `./lock.sh`, then rebuild and test. Deno and cloudflared are pinned too: change the tag in the `Dockerfile`, `tunnel.bat` or `docker-compose.yml`.
 - **The host port** (8010) is published to this machine only, for Tailscale Funnel, a local proxy or a health check. The Cloudflare Tunnel doesn't need it. If a reverse proxy on another machine has to reach the server, set `HOST_BIND=0.0.0.0` in `.env` (Compose).
@@ -250,6 +250,30 @@ TikTok's video servers refuse some download links at random (HTTP 403), with or 
 Per-user hourly caps, the longest video allowed and a monthly AudD cap are all set in `.env`. Deepgram and AudD charge per use, so check their pricing before you open the server to other people.
 
 ReelSense only fetches links on the public internet; links to private or local network addresses are refused. Inside its container it runs as an unprivileged user.
+
+## Privacy
+
+What leaves the server, and for which tool:
+
+- **Deepgram** gets the audio of each video you transcribe (`transcribe_video`, and `find_on_screen` when the video isn't transcribed yet).
+- **AudD** gets short audio clips from the video (`identify_music`).
+- **Voyage AI**, only if `VOYAGE_API_KEY` is set, gets the transcript's lines and your `find_on_screen` query.
+- **Spotify** and **Apple Music** get the track and artist names to look up.
+- The video platforms see the server's requests, not yours, plus the server's cookies if you gave it a `cookies.txt`.
+
+What the server keeps:
+
+- **Downloaded media and frames** only while a job runs; they are deleted when it ends. Finished job results are kept in memory for an hour (`JOB_RESULT_TTL_S`).
+- **Transcripts** for 7 days (`TRANSCRIPT_CACHE_TTL_S`), with their Voyage vectors, in `transcript_cache.sqlite` in the data volume. **Music results** for 90 days (7 days for no match), in `music_cache.sqlite`. Neither records who asked.
+- **The log** holds each job's start with the user's sign-in name and the link (query strings and fragments removed, except the parameters that identify the video), plus timings and errors. Docker keeps it until the container is recreated, unless you set a log rotation.
+
+To clear the transcripts, delete their file: `docker compose exec reelsense rm -f /data/transcript_cache.sqlite`. To clear the music results, empty their table but keep the file, which also holds this month's AudD count:
+
+```
+docker compose exec reelsense python -c "import sqlite3; c = sqlite3.connect('/data/music_cache.sqlite'); c.execute('DELETE FROM music'); c.commit()"
+```
+
+Don't delete the whole volume unless you also want everyone signed out.
 
 ## Licence
 

@@ -19,7 +19,7 @@ import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
-from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, urlencode, urljoin, urlparse
 
 import requests
 import yt_dlp
@@ -352,6 +352,35 @@ def _music(info: dict) -> dict:
 
 def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+# Query parameters that say which video a link is (YouTube's v and list, Facebook's id).
+# Everything else (tracking tags, signed-link tokens, timestamps) stays out of the log.
+_LOG_QUERY_KEEP = ("v", "list", "id")
+
+
+def log_url(url: str, limit: int = 300) -> str:
+    """The link as the log shows it: no login, query string or fragment beyond the
+    parameters that identify the video."""
+    try:
+        parts = urlparse((url or "").strip())
+        query = parse_qs(parts.query)
+    except ValueError:
+        return "(unreadable link)"
+    host = parts.hostname or ""
+    if parts.port:
+        host += f":{parts.port}"
+    kept = urlencode([(k, query[k][0]) for k in _LOG_QUERY_KEEP if k in query])
+    out = f"{parts.scheme}://{host}{parts.path}" + (f"?{kept}" if kept else "")
+    return clip(out, limit)
+
+
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s'\"<>()]+")
+
+
+def log_text(text: str, limit: int) -> str:
+    """An error message for the log, with every link in it cut down by log_url."""
+    return clip(_URL_IN_TEXT_RE.sub(lambda m: log_url(m.group(0), 200), str(text)), limit)
 
 
 def _description(info: dict) -> str:
@@ -1002,7 +1031,7 @@ def _failure(exc: Exception, target: str, used_cookies: bool, stale: bool) -> Us
     if "http error 403" in str(exc).lower():
         # Read the details fine, refused the file (TikTok's CDN does this without valid
         # cookies). Keep yt-dlp's words for the admin.
-        log.warning(f"[yt-dlp] {site} refused the download: {str(exc)[:300]}")
+        log.warning(f"[yt-dlp] {site} refused the download: {log_text(exc, 300)}")
         if used_cookies:
             return _cookie_problem(site, f"{site} refused the download (HTTP 403) even with the server's "
                                          f"cookies: its {site} cookies are probably missing or expired.")
@@ -1027,5 +1056,5 @@ def humanise(exc: Exception) -> UserError:
         if any(n in msg for n in needles):
             return UserError(friendly)
     # Not a known cause: keep yt-dlp's own words in the log, or nobody can tell what broke.
-    log.warning(f"[yt-dlp] unrecognised error: {str(exc)[:500]}")
+    log.warning(f"[yt-dlp] unrecognised error: {log_text(exc, 500)}")
     return UserError("Download failed. The platform may be blocking requests; try again later.")

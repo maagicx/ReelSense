@@ -35,7 +35,7 @@ ENTRA_ALLOWED_GROUP_ID = _env("ENTRA_ALLOWED_GROUP_ID")
 OIDC_CONFIG_URL = _env("OIDC_CONFIG_URL")
 OIDC_AUDIENCE = _env("OIDC_AUDIENCE")
 
-# Comma-separated: emails (alice@gmail.com), whole domains (@example.com), GitHub
+# Comma-separated: emails (alice@example.com), whole domains (@example.com), GitHub
 # usernames (octocat), or * for anyone who can sign in. Case doesn't matter.
 ALLOWED_USERS = [u.strip().lower() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()]
 
