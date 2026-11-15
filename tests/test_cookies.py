@@ -1,5 +1,5 @@
-"""The cookie policy in media._ytdl: YouTube and TikTok try without cookies first and
-retry with them; every other site gets them straight away. yt-dlp is mocked: no network.
+"""The cookie policy in media._ytdl: YouTube tries without cookies first and retries
+with them; every other site, TikTok included, gets them straight away. yt-dlp is mocked: no network.
 
     .venv/bin/python -m unittest discover tests
 """
@@ -83,14 +83,9 @@ class CookiePolicy(WithCookieJar):
             self.run_with("https://www.youtube.com/watch?v=x", fake)
         self.assertEqual(len(fake.calls), 2)
 
-    def test_tiktok_retries_with_cookies(self):
-        fake = FakeYDL(fail={0})
-        self.assertEqual(self.run_with("https://www.tiktok.com/@a/video/1", fake)["run"], 1)
-        self.assertIsNone(fake.calls[0])
-        self.assertTrue(fake.calls[1].endswith("t1.cookies.txt"))
-
     def test_other_sites_get_cookies_first_and_once(self):
-        for url in ("https://www.instagram.com/p/x/", "https://x.com/a/status/1"):
+        for url in ("https://www.instagram.com/p/x/", "https://www.tiktok.com/@a/video/1",
+                    "https://x.com/a/status/1"):
             with self.subTest(url=url):
                 fake = FakeYDL(fail={0})
                 with self.assertRaises(UserError):
@@ -150,7 +145,7 @@ class CookieMessages(WithCookieJar):
         self.assertIn("this server has no cookies.txt", str(ctx.exception))
 
     def test_tiktok_403_with_cookies_blames_them(self):
-        msg, logs = self.error_for("https://www.tiktok.com/@a/video/1", FakeYDL(fail={0, 1}))
+        msg, logs = self.error_for("https://www.tiktok.com/@a/video/1", FakeYDL(fail={0}))
         self.assertEqual(msg, "TikTok refused the download (HTTP 403) even with the server's cookies: "
                               "its TikTok cookies are probably missing or expired. "
                               "Ask the server's admin to refresh its cookies.txt.")

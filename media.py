@@ -238,19 +238,21 @@ def _site(target: str) -> str:
 
 
 def _cookies_last(target: str) -> bool:
-    """Sites tried without cookies first: public videos there need none, and a stale or
-    mismatched export makes them refuse even those."""
-    return _is_youtube_target(target) or platform_of(target) == "tiktok"
+    """Sites tried without cookies first: public videos there need none, and a stale
+    export makes them refuse even those. Only YouTube: TikTok's video servers refuse
+    downloads from the server without cookies (HTTP 403), so a first try without them
+    would only add a failed request."""
+    return _is_youtube_target(target)
 
 
 def _ytdl(target: str, opts: dict, tag: str, download: bool = False) -> dict:
     """yt-dlp's extract_info with the cookie policy, failures as UserError.
 
-    Cookies go with every request except the first try on YouTube and TikTok. YouTube
-    rotates the cookies of an open browser session within minutes of an export, and
-    stale ones make it refuse downloads (HTTP 403) even of public videos, which need no
-    cookies; TikTok's go stale too. So those go without first and retry with cookies
-    only if that fails (age-restricted, members-only, private, a bot check, a CDN 403)."""
+    Cookies go with every request except YouTube's first try. YouTube rotates the
+    cookies of an open browser session within minutes of an export, and stale ones
+    make it refuse downloads (HTTP 403) even of public videos, which need no cookies.
+    So YouTube goes without first and retries with cookies only if that fails
+    (age-restricted, members-only, private, a bot check)."""
     cookies = _cookie_copy(tag)
     jars = [None, cookies] if cookies and _cookies_last(target) else [cookies]
     try:

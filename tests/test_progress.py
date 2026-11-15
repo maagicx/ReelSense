@@ -81,8 +81,8 @@ class CookieRetryStep(WithCookieJar):
         token = media.track(progress)
         self.addCleanup(media.untrack, token)
         with self.assertLogs("transcribe-mcp", "INFO") as logs:
-            self.run_with("https://www.tiktok.com/@a/video/1", FakeYDL(fail={0}))
-        self.assertEqual(progress.steps, ["TikTok without cookies failed, retrying with cookies"])
+            self.run_with("https://www.youtube.com/watch?v=x", FakeYDL(fail={0}))
+        self.assertEqual(progress.steps, ["YouTube without cookies failed, retrying with cookies"])
         self.assertIn("HTTP Error 403", "\n".join(logs.output))
 
 
