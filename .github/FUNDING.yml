@@ -1,3 +1,4 @@
 # Shows the "Sponsor" button on the repo page. Needs a GitHub Sponsors profile:
 # https://github.com/sponsors/accounts
-github: maagicx
+# Off until that profile is live: uncomment the line below to turn it on.
+# github: maagicx
