@@ -662,16 +662,17 @@ async def _get_slides(url: str, slides: Optional[list[int | str]], had_times: bo
     if had_times:
         head += " Timestamps are ignored for slideshows; pass slide numbers in `slides`."
     content: list = [TextContent(type="text", text=head)]
-    for n, jpg in got:
+    for n, jpg, _ in got:
         content.append(TextContent(type="text", text=f"Slide {n} of {count}:"))
         content.append(Image(data=jpg, format="jpeg").to_image_content())
-    log.info(f"[mcp] {name} slides tiktok {len(got)} {sum(len(j) for _, j in got) // 1024}KB "
+    log.info(f"[mcp] {name} slides tiktok {len(got)} {sum(len(j) for _, j, _ in got) // 1024}KB "
              f"{int((time.time() - t0) * 1000)}ms")
     card = {"title": meta.get("title"), "channel": meta.get("channel"), "url": post_url,
             "platform": "tiktok", "slide_count": count,
-            "frames": [{"slide": n, "url": post_url,
+            # full: TikTok's own full-size image link, for "Open full size" (signed: it expires).
+            "frames": [{"slide": n, "url": post_url, "full": full,
                         "image": f"data:image/jpeg;base64,{base64.b64encode(jpg).decode()}"}
-                       for n, jpg in got]}
+                       for n, jpg, full in got]}
     return ToolResult(content=content, meta={"frames": card})
 
 

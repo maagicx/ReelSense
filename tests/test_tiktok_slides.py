@@ -88,7 +88,7 @@ class Fetch(unittest.TestCase):
     def test_second_mirror_when_the_first_refuses(self):
         urls = [CDN.format(n=1, m=0), CDN.format(n=1, m=1)]
         with mock.patch("media.requests.get", side_effect=[Resp(403), Resp(200, b"JPEG")]) as get:
-            self.assertTrue(media._fetch_slide(urls, self.path))
+            self.assertEqual(media._fetch_slide(urls, self.path), urls[1])
         self.assertEqual(get.call_count, 2)
         self.assertFalse(get.call_args.kwargs["allow_redirects"])
         with open(self.path, "rb") as f:
@@ -98,12 +98,12 @@ class Fetch(unittest.TestCase):
         bad = ["https://evil.example/a.jpg", "http://p16.tiktokcdn.com/a.jpg",
                "https://tiktokcdn.com.evil.example/a.jpg"]
         with mock.patch("media.requests.get") as get:
-            self.assertFalse(media._fetch_slide(bad, self.path))
+            self.assertIsNone(media._fetch_slide(bad, self.path))
         get.assert_not_called()
 
     def test_private_address_refused(self):
         with mock.patch("media.is_public_host", return_value=False), mock.patch("media.requests.get") as get:
-            self.assertFalse(media._fetch_slide([CDN.format(n=1, m=0)], self.path))
+            self.assertIsNone(media._fetch_slide([CDN.format(n=1, m=0)], self.path))
         get.assert_not_called()
 
     def test_size_cap(self):
@@ -134,8 +134,9 @@ class Slides(unittest.TestCase):
             meta, got = media.slides(PHOTO, [1, 3], "t")
         self.assertIn("/video/7000000000000000001", req.call_args_list[0].args[0])
         self.assertEqual(meta["slide_count"], 3)
-        self.assertEqual([n for n, _ in got], [1, 3])
+        self.assertEqual([n for n, _, _ in got], [1, 3])
         self.assertEqual(got[1][1], b"JPG:t-s3")
+        self.assertEqual(got[1][2], CDN.format(n=3, m=0))
 
     def test_not_a_slideshow(self):
         with self.assertRaises(UserError) as ctx:

@@ -1091,9 +1091,10 @@ def _slide_host_ok(url: str) -> bool:
             and is_public_host(parts.hostname))
 
 
-def _fetch_slide(urls: list[str], path: str) -> bool:
+def _fetch_slide(urls: list[str], path: str) -> Optional[str]:
     """The first of a slide's mirror links that downloads (some refuse), to path, capped
-    at SLIDE_MAX_MB. Only TikTok's image servers, and no redirects away from them."""
+    at SLIDE_MAX_MB; returns that link, or None. Only TikTok's image servers, and no
+    redirects away from them."""
     cap = int(SLIDE_MAX_MB * 1024 * 1024)
     for url in urls:
         if not _slide_host_ok(url):
@@ -1113,8 +1114,8 @@ def _fetch_slide(urls: list[str], path: str) -> bool:
             continue
         with open(path, "wb") as f:
             f.write(b"".join(chunks))
-        return True
-    return False
+        return url
+    return None
 
 
 def _pick_slides(which: Optional[list[int]], count: int) -> list[int]:
@@ -1130,9 +1131,10 @@ def _pick_slides(which: Optional[list[int]], count: int) -> list[int]:
     return picked
 
 
-def slides(url: str, which: Optional[list[int]], tag: str) -> tuple[dict, list[tuple[int, bytes]]]:
-    """(post summary with slide_count, [(slide number, jpeg)]) for a TikTok slideshow:
-    each image FRAME_WIDTH on its longest side. Call cleanup(tag) after."""
+def slides(url: str, which: Optional[list[int]], tag: str) -> tuple[dict, list[tuple[int, bytes, str]]]:
+    """(post summary with slide_count, [(slide number, jpeg, full-size link)]) for a
+    TikTok slideshow: each jpeg FRAME_WIDTH on its longest side; the link is TikTok's own
+    signed image link (it expires after a few hours). Call cleanup(tag) after."""
     url = normalise_url(url)
     if not _is_tiktok_photo(url):
         raise UserError("Not a TikTok slideshow. For a video, pass timestamps to get_frames.")
@@ -1146,12 +1148,13 @@ def slides(url: str, which: Optional[list[int]], tag: str) -> tuple[dict, list[t
     out = []
     for n in _pick_slides(which, len(images)):
         path = os.path.join(TMP, f"{tag}-s{n}")
-        if not _fetch_slide(images[n - 1], path):
+        full = _fetch_slide(images[n - 1], path)
+        if not full:
             raise UserError(f"TikTok refused slide {n}. Try again in a minute.")
         jpg = _grab(path, 0)
         if jpg is None:
             raise UserError(f"Couldn't read slide {n}.")
-        out.append((n, jpg))
+        out.append((n, jpg, full))
     meta["slide_count"] = len(images)
     return meta, out
 

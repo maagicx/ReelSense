@@ -357,6 +357,8 @@
       caption.replaceChildren(el("span", null, label(f)));
       if (isHttps(f.url)) caption.append(link("open", isSlide(f) ? "Open on TikTok ↗"
                                                                  : `Open at ${duration(Math.floor(f.time))} ↗`, f.url));
+      // A slide's original image on TikTok's servers (signed: works for a few hours).
+      if (isSlide(f) && isHttps(f.full)) caption.append(link("open", "Open full size ↗", f.full));
       said.textContent = f.text ? `“${f.text}”` : "";
       buttons.forEach((b, j) => b.setAttribute("aria-current", String(j === i)));
       reportSize();
