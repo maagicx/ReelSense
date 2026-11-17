@@ -5,6 +5,7 @@ Failures surface as UserError with a short message fit for a tool result.
 """
 import base64
 import contextvars
+import functools
 import glob
 import html
 import ipaddress
@@ -138,6 +139,8 @@ def normalise_url(url: str) -> str:
     url = (url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         raise UserError("Not a URL. Pass a full http(s) link to the video.")
+    if _is_tiktok_short(url):
+        url = _resolve_tiktok_short(url)
     if "tiktok.com" in url and "is_from_webapp" not in url:
         url += ("&" if "?" in url else "?") + "is_from_webapp=1&sender_device=pc"
     m = _ABCNEWS_RE.match(url)
@@ -150,6 +153,48 @@ def normalise_url(url: str) -> str:
     if not is_public_host(host):
         raise UserError(f"{host or 'That link'} isn't a public internet address. Pass a public link to the video.")
     return url
+
+
+_TIKTOK_SHORT_HOSTS = ("vm.tiktok.com", "vt.tiktok.com")
+TIKTOK_SHORT_MAX_HOPS = 5
+
+
+def _is_tiktok_host(host: Optional[str]) -> bool:
+    host = (host or "").lower()
+    return host == "tiktok.com" or host.endswith(".tiktok.com")
+
+
+def _is_tiktok_short(url: str) -> bool:
+    parts = urlparse(url)
+    host = (parts.hostname or "").lower()
+    return host in _TIKTOK_SHORT_HOSTS or (host in ("tiktok.com", "www.tiktok.com")
+                                           and parts.path.startswith("/t/"))
+
+
+@functools.lru_cache(maxsize=256)
+def _resolve_tiktok_short(url: str) -> str:
+    """The post a TikTok short link (vm.tiktok.com/…, tiktok.com/t/…) points to, without
+    TikTok's tracking query. Resolved here, not by yt-dlp: its short-link extractor fails
+    on slideshows (/photo/ links), and this lets probe() recognise them. Every hop must
+    stay on TikTok over https. Cached: one job resolves the same link several times."""
+    current = url
+    for _ in range(TIKTOK_SHORT_MAX_HOPS):
+        try:
+            resp = requests.get(current, headers=_TIKTOK_HEADERS, allow_redirects=False,
+                                timeout=10, stream=True)
+            resp.close()
+        except requests.RequestException:
+            raise UserError("Couldn't open that TikTok short link. Try again, or pass the full post link.")
+        location = resp.headers.get("Location") if resp.is_redirect else None
+        if not location:
+            break
+        current = urljoin(current, location)
+        parts = urlparse(current)
+        if parts.scheme != "https" or not _is_tiktok_host(parts.hostname):
+            raise UserError("That TikTok short link leads off TikTok. Pass the full post link instead.")
+        if not _is_tiktok_short(current):
+            return f"https://{parts.hostname}{parts.path}"
+    raise UserError("Couldn't open that TikTok short link. Try again, or pass the full post link.")
 
 
 def is_public_host(host: Optional[str]) -> bool:
@@ -203,6 +248,19 @@ def platform_of(url: str) -> str:
 
 def _is_tiktok_photo(url: str) -> bool:
     return "tiktok.com" in url and "/photo/" in url
+
+
+_TIKTOK_PHOTO_RE = re.compile(r"/photo/(\d+)")
+
+
+def _tiktok_photo_as_video(url: str) -> str:
+    """A slideshow (/photo/<id>) as /video/<id>: yt-dlp has no extractor for /photo/
+    links, but reads the same post as a video link, with its sound as the "audio" format."""
+    return _TIKTOK_PHOTO_RE.sub(r"/video/\1", url, count=1)
+
+
+PHOTO_POST_MESSAGE = ("This is a TikTok photo (slideshow) post: it has a sound but no speech. "
+                      "Use identify_music for the song.")
 
 
 # ---------------------------------------------------------------- yt-dlp
@@ -445,17 +503,25 @@ def _summary(info: dict, url: str) -> dict:
     return out
 
 
-def probe(url: str, tag: str, with_key: bool = False) -> dict:
+def probe(url: str, tag: str, with_key: bool = False, allow_photo: bool = False) -> dict:
     """Metadata only, no download. Returns the summary dict; with_key adds video_key
-    ("<extractor>:<id>", the same for every link to one video) for caching."""
+    ("<extractor>:<id>", the same for every link to one video) for caching. A TikTok
+    slideshow is refused unless allow_photo (it has a sound but no speech or video); then
+    it is read as a video link and marked is_photo_post, with duration = the sound's."""
     url = normalise_url(url)
-    if _is_tiktok_photo(url):
-        raise UserError("This is a TikTok photo post: there is no audio to transcribe.")
-    info = _ytdl(url, {**_base_opts(url), "skip_download": True}, f"{tag}-probe")
+    photo = _is_tiktok_photo(url)
+    if photo and not allow_photo:
+        raise UserError(PHOTO_POST_MESSAGE)
+    target = _tiktok_photo_as_video(url) if photo else url
+    info = _ytdl(target, {**_base_opts(target), "skip_download": True}, f"{tag}-probe")
     if info.get("_type") == "playlist":
         raise UserError("That URL is a playlist or channel. Pass a single video link, "
                         "or use list_videos / channel_info.")
     out = _summary(info, url)
+    if photo:
+        parts = urlparse(url)
+        out["url"] = f"https://{parts.hostname}{parts.path}"
+        out["is_photo_post"] = True
     if with_key and info.get("id"):
         out["video_key"] = f"{info.get('extractor_key') or out['platform']}:{info['id']}"
     return out
@@ -797,15 +863,16 @@ class _TikTokSound(yt_dlp.postprocessor.PostProcessor):
     servers refuse about half the links, and it's fetched without the pause before
     downloads. With a licensed track attached it is the whole
     song (187 s of Mozart for a 50 s video with a voiceover), not the video's audio."""
-    def __init__(self, allow: bool):
+    def __init__(self, allow: bool, photo: bool = False):
         super().__init__()
-        self.allow, self.used, self.duration = allow, False, None
+        # photo: a slideshow, whose sound is all there is: always use it.
+        self.allow, self.photo, self.used, self.duration = allow, photo, False, None
 
     def run(self, info):
         formats = info.get("formats") or []
         self.duration = info.get("duration")
-        self.used = (self.allow and bool(self.duration) and _own_sound(info)
-                     and any(f.get("format_id") == "audio" for f in formats))
+        has_sound = any(f.get("format_id") == "audio" for f in formats)
+        self.used = has_sound and (self.photo or (self.allow and bool(self.duration) and _own_sound(info)))
         if not self.used:
             info["formats"] = [f for f in formats if f.get("format_id") != "audio"]
         elif self._downloader:
@@ -835,6 +902,12 @@ def download_audio(url: str, job_id: str, section: Optional[dict] = None, music:
     video is downloaded instead. Other posts download the video."""
     url = normalise_url(url)
     tiktok = platform_of(url) == "tiktok"
+    if tiktok and _is_tiktok_photo(url):
+        # A slideshow: its sound file is the only audio, so no length check or fallback.
+        path = _download_audio(_tiktok_photo_as_video(url), job_id, section, music,
+                               _TikTokSound(allow=True, photo=True))
+        step(job_id, "used the slideshow's sound file")
+        return path
     sound = _TikTokSound(allow=True)
     path = _download_audio(url, job_id, section, music, sound if tiktok else None)
     if tiktok and sound.used:
@@ -908,6 +981,8 @@ def _video_stream(url: str, tag: str) -> tuple[dict, dict]:
     first: every ffmpeg decodes it."""
     opts = {**_base_opts(url), "skip_download": True, "format": "bv*[protocol^=m3u8]/bv*/b",
             "format_sort": [f"res:{FRAME_SOURCE_HEIGHT}", "vcodec:h264"]}
+    if _is_tiktok_photo(url):
+        raise UserError("This is a TikTok photo (slideshow) post: it has no video to take frames from.")
     info = _ytdl(url, opts, f"{tag}-frames")
     if info.get("_type") == "playlist":
         raise UserError("That URL is a playlist or channel. Pass a single video link.")

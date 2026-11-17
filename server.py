@@ -866,11 +866,12 @@ def _track_name(track) -> str:
 def _identify(url: str, mode: str, start: Optional[float], tag: str, provider, confirm: bool = True) -> dict:
     t0 = time.time()
     media.doing("reading the video's details")
-    meta = media.probe(url, tag, with_key=True)
+    meta = media.probe(url, tag, with_key=True, allow_photo=True)
     duration = meta.get("duration") or 0
     media.step(tag, f"read details: {meta.get('platform')}, {duration}s ({media.since(t0)})")
     service = MUSIC_SERVICE_NAMES.get(provider.name, provider.name)
-    head = {"video": {k: meta[k] for k in ("title", "url", "platform", "duration") if meta.get(k)},
+    head = {"video": {k: meta[k] for k in ("title", "url", "platform", "duration", "is_photo_post")
+                      if meta.get(k)},
             "post_credit": _post_credit(meta)}
     key = f"{meta.get('video_key') or meta.get('url')}:{mode}:{int(start) if start is not None else '-'}"
     if cached := music_cache.get(key):
@@ -984,6 +985,9 @@ def _assess(result: dict, meta: dict) -> dict:
     if any(t.get("doubtful") for t in tracks):
         notes.append("Tracks marked doubtful (see doubt_reasons) may be a compilation, cover or "
                      "namesake rather than what plays; weigh them against post_credit.")
+    if meta.get("is_photo_post"):
+        notes.append("Slideshow post: fingerprinted the sound TikTok attached to it, so the post's "
+                     "music tag (post_credit) is reliable here.")
     if result.get("credited_track"):
         notes.append("credited_track is the track the post's music tag names, found on Spotify. "
                      "Prefer it over a doubtful or missing fingerprint match.")
@@ -1230,7 +1234,8 @@ only says "original sound" but the caption or hashtags name the songs.
 ## Good to know
 - Videos up to {MAX_DURATION_S // 3600} h, or a part of up to {MAX_DURATION_S // 3600} h of anything \
 longer. Long ones keep transcribing in the background; just ask Claude to check on it.
-- Can't be done: private or login-only videos, live streams and premieres, TikTok photo posts, \
+- Can't be done: private or login-only videos, live streams and premieres, TikTok photo posts \
+(slideshows: identify_music works on their sound), \
 listing Instagram profiles (single Instagram posts and reels work).
 - Transcripts come from speech recognition (Deepgram), so names and jargon can be misspelled.
 - To copy a whole transcript, use **Copy transcript** on the video card (or expand the tool call). \
