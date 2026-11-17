@@ -34,7 +34,7 @@ Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ─
 | `list_videos` | A channel's, playlist's or profile's videos, newest or most popular. |
 | `search_videos` | YouTube keyword search, optionally limited to recent uploads. |
 | `get_comments` | Top comments on a YouTube video. |
-| `get_frames` | Still images at chosen times. |
+| `get_frames` | Still images at chosen times, or the slides of a TikTok photo slideshow. |
 | `find_on_screen` | What is on screen when a topic is mentioned: the matching transcript lines, each with a frame from that moment, in one call. Matches by keyword, or also by meaning with a `VOYAGE_API_KEY`. |
 | `identify_music` | Names the songs in a video by audio fingerprint (AudD). |
 | `find_on_spotify` / `find_on_apple_music` | Finds a track by name. |
@@ -250,7 +250,7 @@ TikTok's video servers refuse some download links at random (HTTP 403), with or 
 
 - **Downloads the post's sound file when it is the creator's own** (the sound's artist is the post's channel or handle). That file is the video's audio, fetched in one small request with no pause, usually in about a second. The steps say "used the post's own sound file". It must match the video's length within 2 seconds, or ReelSense downloads the video instead.
 - **Downloads the video for anything else.** A licensed song or someone else's sound is often not what the video plays: a 50-second voice-over can carry a 3-minute song as its sound.
-- **Photo slideshows: music only.** `identify_music` fingerprints the sound attached to a slideshow. Transcription and frames refuse slideshows: there is no speech, and yt-dlp exposes only the first slide.
+- **Photo slideshows: slides and music.** `get_frames` returns a slideshow's slides (all of them, or the numbers in `slides`), read from the post's TikTok page because yt-dlp exposes only the first one. `identify_music` fingerprints the sound attached to it. There is no speech, so transcription refuses slideshows.
 - **Short links** (`vm.tiktok.com`, `vt.tiktok.com`, `tiktok.com/t/…`) are resolved to the post first, staying on TikTok.
 - **Retries a refused video link with a fresh one**, up to 3 tries in total (`TIKTOK_LINK_ATTEMPTS`), 2 seconds apart. Each retry shows in the steps. Only when all of them are refused is the user told "TikTok refused the download (HTTP 403)".
 

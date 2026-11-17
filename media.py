@@ -45,6 +45,7 @@ FRAME_SOURCE_HEIGHT = 720  # read frames from a stream no taller than this
 # Fallback when ffmpeg can't read the stream itself (TikTok's CDN wants yt-dlp's TLS
 # impersonation): yt-dlp downloads the whole video, up to this size.
 FRAME_DOWNLOAD_MAX_MB = float(os.environ.get("FRAME_DOWNLOAD_MAX_MB") or 50)
+SLIDE_MAX_MB = float(os.environ.get("SLIDE_MAX_MB") or 15)  # per TikTok slideshow image
 MAX_COMMENTS = int(os.environ.get("MAX_COMMENTS") or 200)
 
 # TikTok's video servers refuse some signed links at random (HTTP 403, about half of
@@ -259,8 +260,8 @@ def _tiktok_photo_as_video(url: str) -> str:
     return _TIKTOK_PHOTO_RE.sub(r"/video/\1", url, count=1)
 
 
-PHOTO_POST_MESSAGE = ("This is a TikTok photo (slideshow) post: it has a sound but no speech, and "
-                      "its slides can't be read yet. Use identify_music for the song.")
+PHOTO_POST_MESSAGE = ("This is a TikTok photo (slideshow) post: it has a sound but no speech. "
+                      "Use get_frames to see its slides, or identify_music for the song.")
 
 
 # ---------------------------------------------------------------- yt-dlp
@@ -982,8 +983,8 @@ def _video_stream(url: str, tag: str) -> tuple[dict, dict]:
     opts = {**_base_opts(url), "skip_download": True, "format": "bv*[protocol^=m3u8]/bv*/b",
             "format_sort": [f"res:{FRAME_SOURCE_HEIGHT}", "vcodec:h264"]}
     if _is_tiktok_photo(url):
-        raise UserError("This is a TikTok photo (slideshow) post: it has no video to take frames from, "
-                        "and its slides can't be read yet.")
+        raise UserError("This is a TikTok photo (slideshow) post: it has no video. "
+                        "Use get_frames without timestamps to see its slides.")
     info = _ytdl(url, opts, f"{tag}-frames")
     if info.get("_type") == "playlist":
         raise UserError("That URL is a playlist or channel. Pass a single video link.")
@@ -1053,6 +1054,106 @@ def frames(url: str, times: list[float], tag: str) -> tuple[dict, list[tuple[flo
             raise UserError(f"Couldn't read the frame at {_clock(t)}.")
         out.append((t, jpg))
     return _summary(info, url), out
+
+
+# ---------------------------------------------------------------- TikTok slideshows
+
+# The post's data as TikTok's web page embeds it. yt-dlp reads the same blob but keeps
+# only the cover image, so the slides come from here.
+_REHYDRATION_RE = re.compile(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', re.S)
+_TIKTOK_IMAGE_HOST_RE = re.compile(r"(?:^|\.)tiktokcdn(?:-[a-z]+)?\.com$")
+_NO_SLIDES = ("TikTok didn't return this slideshow's slides (it may be asking for a sign-in). "
+              "Try again later.")
+
+
+def _slide_urls(html: str) -> list[list[str]]:
+    """Each slide's image links (signed mirrors of one image), from the page's data blob."""
+    m = _REHYDRATION_RE.search(html or "")
+    try:
+        data = json.loads(m.group(1)) if m else {}
+    except ValueError:
+        data = {}
+    detail = ((data.get("__DEFAULT_SCOPE__") or {}).get("webapp.video-detail") or {}) if isinstance(data, dict) else {}
+    item = (detail.get("itemInfo") or {}).get("itemStruct") or {}
+    out = []
+    for image in (item.get("imagePost") or {}).get("images") or []:
+        urls = [u for u in ((image or {}).get("imageURL") or {}).get("urlList") or [] if isinstance(u, str)]
+        if urls:
+            out.append(urls)
+    if not out:
+        raise UserError(_NO_SLIDES)
+    return out
+
+
+def _slide_host_ok(url: str) -> bool:
+    parts = urlparse(url)
+    return (parts.scheme == "https" and bool(_TIKTOK_IMAGE_HOST_RE.search(parts.hostname or ""))
+            and is_public_host(parts.hostname))
+
+
+def _fetch_slide(urls: list[str], path: str) -> bool:
+    """The first of a slide's mirror links that downloads (some refuse), to path, capped
+    at SLIDE_MAX_MB. Only TikTok's image servers, and no redirects away from them."""
+    cap = int(SLIDE_MAX_MB * 1024 * 1024)
+    for url in urls:
+        if not _slide_host_ok(url):
+            continue
+        try:
+            with requests.get(url, headers=_TIKTOK_HEADERS, timeout=10, stream=True,
+                              allow_redirects=False) as resp:
+                if resp.status_code != 200:
+                    continue
+                size, chunks = 0, []
+                for chunk in resp.iter_content(64 * 1024):
+                    size += len(chunk)
+                    if size > cap:
+                        raise UserError(f"A slide is over the {SLIDE_MAX_MB:.0f} MB limit.")
+                    chunks.append(chunk)
+        except requests.RequestException:
+            continue
+        with open(path, "wb") as f:
+            f.write(b"".join(chunks))
+        return True
+    return False
+
+
+def _pick_slides(which: Optional[list[int]], count: int) -> list[int]:
+    """1-based slide numbers: all (up to MAX_FRAMES) when which is empty."""
+    if not which:
+        return list(range(1, min(count, MAX_FRAMES) + 1))
+    picked = sorted(set(which))
+    if len(picked) > MAX_FRAMES:
+        raise UserError(f"Pass at most {MAX_FRAMES} slide numbers (got {len(picked)}).")
+    wrong = [n for n in picked if n < 1 or n > count]
+    if wrong:
+        raise UserError(f"There is no slide {wrong[0]}: this slideshow has {count} slide{'s' if count != 1 else ''}.")
+    return picked
+
+
+def slides(url: str, which: Optional[list[int]], tag: str) -> tuple[dict, list[tuple[int, bytes]]]:
+    """(post summary with slide_count, [(slide number, jpeg)]) for a TikTok slideshow:
+    each image FRAME_WIDTH on its longest side. Call cleanup(tag) after."""
+    url = normalise_url(url)
+    if not _is_tiktok_photo(url):
+        raise UserError("Not a TikTok slideshow. For a video, pass timestamps to get_frames.")
+    meta = probe(url, tag, allow_photo=True)
+    parts = urlparse(_tiktok_photo_as_video(url))
+    try:
+        page = requests.get(f"https://{parts.hostname}{parts.path}", headers=_TIKTOK_HEADERS, timeout=15)
+    except requests.RequestException:
+        raise UserError(_NO_SLIDES)
+    images = _slide_urls(page.text)
+    out = []
+    for n in _pick_slides(which, len(images)):
+        path = os.path.join(TMP, f"{tag}-s{n}")
+        if not _fetch_slide(images[n - 1], path):
+            raise UserError(f"TikTok refused slide {n}. Try again in a minute.")
+        jpg = _grab(path, 0)
+        if jpg is None:
+            raise UserError(f"Couldn't read slide {n}.")
+        out.append((n, jpg))
+    meta["slide_count"] = len(images)
+    return meta, out
 
 
 def cleanup(job_id: str) -> None:

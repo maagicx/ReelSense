@@ -578,8 +578,17 @@ def _at_time(url: str, t: float) -> str:
     f"describe. Up to {media.MAX_FRAMES} per call, longest side {media.FRAME_WIDTH} px (each "
     "image is roughly 450 tokens). Pick moments from transcript segment times or chapters. "
     "Each call uses one transcription slot of the hourly limit. If you're picking times "
-    "based on speech, use find_on_screen instead."))
-async def get_frames(url: str, timestamps: list[str | float]) -> ToolResult:
+    "based on speech, use find_on_screen instead. For a TikTok photo slideshow, returns its "
+    "slides instead: all of them by default, or the ones in `slides` (1-based numbers); "
+    "timestamps are ignored."))
+async def get_frames(url: str, timestamps: Optional[list[str | float]] = None,
+                     slides: Optional[list[int | str]] = None) -> ToolResult:
+    try:
+        if media._is_tiktok_photo(await asyncio.to_thread(media.normalise_url, url)):
+            return await _get_slides(url, slides, bool(timestamps))
+    except UserError as exc:
+        return ToolResult(content=[TextContent(type="text", text=f"Error: {exc}")], is_error=True)
+    timestamps = timestamps or []
     try:
         times = sorted({media.parse_time(t) for t in timestamps if media.parse_time(t) is not None})
     except UserError as exc:
@@ -615,6 +624,54 @@ async def get_frames(url: str, timestamps: list[str | float]) -> ToolResult:
             "frames": [{"time": t, "url": _at_time(video_url, t),
                         "image": f"data:image/jpeg;base64,{base64.b64encode(jpg).decode()}"}
                        for t, jpg in grabbed]}
+    return ToolResult(content=content, meta={"frames": card})
+
+
+def _slide_numbers(values: Optional[list[int | str]]) -> list[int]:
+    out = []
+    for v in values or []:
+        text = str(v).strip()
+        if not text.isdigit():
+            raise UserError(f"Slide numbers are whole numbers from 1 (got {v!r}).")
+        out.append(int(text))
+    return out
+
+
+async def _get_slides(url: str, slides: Optional[list[int | str]], had_times: bool) -> ToolResult:
+    """get_frames for a TikTok slideshow: the slide images, labelled "Slide n of m"."""
+    def error(msg: str) -> ToolResult:
+        return ToolResult(content=[TextContent(type="text", text=f"Error: {msg}")], is_error=True)
+    try:
+        which = _slide_numbers(slides)
+    except UserError as exc:
+        return error(str(exc))
+    (uid, name), t0 = _caller(), time.time()
+    if not JOBS.take_slot(uid):
+        return error(f"limit of {MAX_JOBS_PER_HOUR} jobs per hour reached.")
+    tag = f"sl-{uuid.uuid4().hex[:8]}"
+    try:
+        meta, got = await asyncio.to_thread(media.slides, url, which, tag)
+    except UserError as exc:
+        log.info(f"[mcp] {name} slides tiktok error {int((time.time() - t0) * 1000)}ms")
+        return error(str(exc))
+    finally:
+        await asyncio.to_thread(media.cleanup, tag)
+    count, post_url = meta.get("slide_count") or len(got), meta.get("url") or url
+    head = (f"{meta.get('title') or 'TikTok slideshow'} (tiktok, {post_url}): {len(got)} slide(s) "
+            f"of {count}, a photo slideshow.")
+    if had_times:
+        head += " Timestamps are ignored for slideshows; pass slide numbers in `slides`."
+    content: list = [TextContent(type="text", text=head)]
+    for n, jpg in got:
+        content.append(TextContent(type="text", text=f"Slide {n} of {count}:"))
+        content.append(Image(data=jpg, format="jpeg").to_image_content())
+    log.info(f"[mcp] {name} slides tiktok {len(got)} {sum(len(j) for _, j in got) // 1024}KB "
+             f"{int((time.time() - t0) * 1000)}ms")
+    card = {"title": meta.get("title"), "channel": meta.get("channel"), "url": post_url,
+            "platform": "tiktok", "slide_count": count,
+            "frames": [{"slide": n, "url": post_url,
+                        "image": f"data:image/jpeg;base64,{base64.b64encode(jpg).decode()}"}
+                       for n, jpg in got]}
     return ToolResult(content=content, meta={"frames": card})
 
 
@@ -1206,6 +1263,7 @@ on YouTube also subscribers and verified status.
 on-screen text or charts the speech doesn't cover. Claude reads them, and in Claude they show as \
 a gallery with "Open at" links to that moment.
 - "Show me the slide at 12:30 in <link>" or "Grab frames at the start of each chapter of <link>"
+- "Show me the slides of <TikTok slideshow link>": a photo slideshow's images, all or by number.
 
 **Find what's on screen when something is mentioned.** One step: Claude transcribes the video, \
 finds the moments a topic is talked about and shows a still from each, with the line being said. \
@@ -1235,8 +1293,8 @@ only says "original sound" but the caption or hashtags name the songs.
 ## Good to know
 - Videos up to {MAX_DURATION_S // 3600} h, or a part of up to {MAX_DURATION_S // 3600} h of anything \
 longer. Long ones keep transcribing in the background; just ask Claude to check on it.
-- Can't be done: private or login-only videos, live streams and premieres, transcripts or \
-frames of TikTok photo slideshows (identify_music works on their sound), \
+- Can't be done: private or login-only videos, live streams and premieres, transcripts of \
+TikTok photo slideshows (no speech: get_frames shows their slides, identify_music names the song), \
 listing Instagram profiles (single Instagram posts and reels work).
 - Transcripts come from speech recognition (Deepgram), so names and jargon can be misspelled.
 - To copy a whole transcript, use **Copy transcript** on the video card (or expand the tool call). \

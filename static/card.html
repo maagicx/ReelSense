@@ -317,10 +317,16 @@
       return { ...f, src };
     }).filter(f => f.src);
     if (!shots.length) { showError("No frames came back."); return; }
-    root.append(el("p", "title", fm.title || "Video frames"));
+    // A TikTok slideshow's images carry a slide number in place of a time.
+    const isSlide = f => f.slide != null;
+    const label = f => isSlide(f) ? `Slide ${f.slide}` : `Frame at ${duration(Math.floor(f.time))}`;
+    const badge = f => isSlide(f) ? String(f.slide) : duration(Math.floor(f.time));
+    root.append(el("p", "title", fm.title || (shots.some(isSlide) ? "TikTok slideshow" : "Video frames")));
     const meta = el("p", "meta");
     if (fm.channel) meta.append(el("span", null, fm.channel));
-    meta.append(el("span", null, `${shots.length} frame${shots.length > 1 ? "s" : ""}`));
+    meta.append(el("span", null, shots.some(isSlide)
+      ? `${shots.length} of ${fm.slide_count || shots.length} slide${(fm.slide_count || shots.length) > 1 ? "s" : ""}`
+      : `${shots.length} frame${shots.length > 1 ? "s" : ""}`));
     if (fm.platform) meta.append(el("span", null, platformName(fm.platform)));
     // find_on_screen: what was searched for, and whether these are matches or a fallback.
     if (fm.query) meta.append(el("span", null, fm.fallback ? `No match for “${fm.query}”: evenly spaced`
@@ -336,11 +342,11 @@
     const buttons = shots.map((f, i) => {
       const b = el("button");
       b.type = "button";
-      b.setAttribute("aria-label", `Frame at ${duration(Math.floor(f.time))}`);
+      b.setAttribute("aria-label", label(f));
       const im = el("img");
       im.alt = "";
       im.src = src(f);
-      b.append(im, el("span", "badge", duration(Math.floor(f.time))));
+      b.append(im, el("span", "badge", badge(f)));
       b.addEventListener("click", () => show(i));
       strip.append(b);
       return b;
@@ -348,8 +354,9 @@
     function show(i) {
       const f = shots[i];
       big.src = src(f);
-      caption.replaceChildren(el("span", null, `Frame at ${duration(Math.floor(f.time))}`));
-      if (isHttps(f.url)) caption.append(link("open", `Open at ${duration(Math.floor(f.time))} ↗`, f.url));
+      caption.replaceChildren(el("span", null, label(f)));
+      if (isHttps(f.url)) caption.append(link("open", isSlide(f) ? "Open on TikTok ↗"
+                                                                 : `Open at ${duration(Math.floor(f.time))} ↗`, f.url));
       said.textContent = f.text ? `“${f.text}”` : "";
       buttons.forEach((b, j) => b.setAttribute("aria-current", String(j === i)));
       reportSize();
@@ -488,18 +495,21 @@
     platform === "youtube" ? `${url}${url.includes("?") ? "&" : "?"}t=${Math.floor(t)}` : url;
 
   // get_frames without _meta (a host may drop it): rebuild from the content itself, where
-  // each image follows a "Frame at m:ss:" text block and the first text is the heading.
+  // each image follows a "Frame at m:ss:" (or a slideshow's "Slide n of m:") text block and
+  // the first text is the heading.
   function framesFromContent(result) {
     const content = (result && result.content) || [];
     const frames = [];
     content.forEach((c, i) => {
-      const m = c.type === "image" && content[i - 1] && content[i - 1].type === "text" &&
-        /^Frame at ([\d:]+)(?::$|: "| \(fallback)/.exec(content[i - 1].text);
+      const prev = c.type === "image" && content[i - 1] && content[i - 1].type === "text" && content[i - 1].text;
+      const m = prev && /^Frame at ([\d:]+)(?::$|: "| \(fallback)/.exec(prev);
+      const s = prev && /^Slide (\d+) of \d+:$/.exec(prev);
       if (m) frames.push({ time: m[1].split(":").reduce((a, p) => a * 60 + Number(p), 0) });
+      else if (s) frames.push({ slide: Number(s[1]) });
     });
     if (!frames.length) return null;
     const head = content[0] && content[0].type === "text" ? content[0].text : "";
-    let h = /^(.*) \(([^,]+), (https?:\/\/[^)]+)\): \d+ frame/.exec(head);
+    let h = /^(.*) \(([^,]+), (https?:\/\/[^)]+)\): \d+ (?:frame|slide)/.exec(head);
     if (!h) {  // find_on_screen: the heading is the JSON result
       try { const j = JSON.parse(head); if (j && j.url) h = [null, j.title || "Video frames", j.platform || "", j.url]; }
       catch (e) { /* not JSON */ }
