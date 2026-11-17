@@ -250,6 +250,8 @@ TikTok's video servers refuse some download links at random (HTTP 403), with or 
 
 - **Downloads the post's sound file when it is the creator's own** (the sound's artist is the post's channel or handle). That file is the video's audio, fetched in one small request with no pause, usually in about a second. The steps say "used the post's own sound file". It must match the video's length within 2 seconds, or ReelSense downloads the video instead.
 - **Downloads the video for anything else.** A licensed song or someone else's sound is often not what the video plays: a 50-second voice-over can carry a 3-minute song as its sound.
+- **Photo slideshows: music only.** `identify_music` fingerprints the sound attached to a slideshow. Transcription and frames refuse slideshows: there is no speech, and yt-dlp exposes only the first slide.
+- **Short links** (`vm.tiktok.com`, `vt.tiktok.com`, `tiktok.com/t/…`) are resolved to the post first, staying on TikTok.
 - **Retries a refused video link with a fresh one**, up to 3 tries in total (`TIKTOK_LINK_ATTEMPTS`), 2 seconds apart. Each retry shows in the steps. Only when all of them are refused is the user told "TikTok refused the download (HTTP 403)".
 
 ## Limits and costs

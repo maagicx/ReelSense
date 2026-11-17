@@ -259,8 +259,8 @@ def _tiktok_photo_as_video(url: str) -> str:
     return _TIKTOK_PHOTO_RE.sub(r"/video/\1", url, count=1)
 
 
-PHOTO_POST_MESSAGE = ("This is a TikTok photo (slideshow) post: it has a sound but no speech. "
-                      "Use identify_music for the song.")
+PHOTO_POST_MESSAGE = ("This is a TikTok photo (slideshow) post: it has a sound but no speech, and "
+                      "its slides can't be read yet. Use identify_music for the song.")
 
 
 # ---------------------------------------------------------------- yt-dlp
@@ -982,7 +982,8 @@ def _video_stream(url: str, tag: str) -> tuple[dict, dict]:
     opts = {**_base_opts(url), "skip_download": True, "format": "bv*[protocol^=m3u8]/bv*/b",
             "format_sort": [f"res:{FRAME_SOURCE_HEIGHT}", "vcodec:h264"]}
     if _is_tiktok_photo(url):
-        raise UserError("This is a TikTok photo (slideshow) post: it has no video to take frames from.")
+        raise UserError("This is a TikTok photo (slideshow) post: it has no video to take frames from, "
+                        "and its slides can't be read yet.")
     info = _ytdl(url, opts, f"{tag}-frames")
     if info.get("_type") == "playlist":
         raise UserError("That URL is a playlist or channel. Pass a single video link.")

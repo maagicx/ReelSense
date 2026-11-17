@@ -1217,6 +1217,7 @@ For details you have to see: account names, settings, prices, charts, slides, co
 **Identify the music.** Names the song or recording playing in a video by its audio \
 fingerprint, with a Spotify link, and shows what the post itself credits so Claude can compare.
 - "What song is playing in <link>?" or "Who performs the music at 0:45 in <link>?"
+- TikTok photo slideshows work too: their sound is fingerprinted, and short links (vm.tiktok.com) are fine.
 - "List every track in this mix: <link>" (a full scan, for videos up to {MUSIC_FULL_MAX_S // 60} min). \
 Claude tells you what it will cost first and only scans if you say yes.
 - Live, unreleased or amateur performances usually don't match: Claude then goes by the caption \
@@ -1234,8 +1235,8 @@ only says "original sound" but the caption or hashtags name the songs.
 ## Good to know
 - Videos up to {MAX_DURATION_S // 3600} h, or a part of up to {MAX_DURATION_S // 3600} h of anything \
 longer. Long ones keep transcribing in the background; just ask Claude to check on it.
-- Can't be done: private or login-only videos, live streams and premieres, TikTok photo posts \
-(slideshows: identify_music works on their sound), \
+- Can't be done: private or login-only videos, live streams and premieres, transcripts or \
+frames of TikTok photo slideshows (identify_music works on their sound), \
 listing Instagram profiles (single Instagram posts and reels work).
 - Transcripts come from speech recognition (Deepgram), so names and jargon can be misspelled.
 - To copy a whole transcript, use **Copy transcript** on the video card (or expand the tool call). \
