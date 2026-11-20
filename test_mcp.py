@@ -102,7 +102,8 @@ async def main(base: str, quick: bool) -> int:
         failures += card.mimeType != "text/html;profile=mcp-app" or "ui/initialize" not in card.text
         failures += not card_uri or any(card_uris[t] != card_uri for t in
                                         ("video_info", "transcribe_video", "get_transcript", "identify_music", "find_on_spotify",
-                                         "find_on_apple_music", "find_on_screen", "get_frames"))
+                                         "find_on_apple_music", "find_on_screen", "get_frames",
+                                         "list_videos", "search_videos"))
         # A client still holding an older card URI (ChatGPT, until the app is refreshed) gets the same card.
         old_card = (await bearer.read_resource("ui://transcribe/card-00000000.html"))[0]
         print(f"old card URI: {old_card.mimeType} {len(old_card.text)} chars")
@@ -150,13 +151,25 @@ async def main(base: str, quick: bool) -> int:
             "list_videos", {"url": YT_CHANNEL, "limit": 5, "sort": "popular"}))
         views = [v.get("views") or 0 for v in top.get("videos") or []]
         failures += len(views) != 5 or views != sorted(views, reverse=True) or top.get("scanned", 0) <= 5
+        failures += not all(isinstance(v.get("likes"), int) for v in top.get("videos") or [])
+        raw = await bearer.call_tool("list_videos", {"url": CHANNEL, "limit": 5, "sort": "likes"})
+        liked = show("list_videos tiktok likes", raw)
+        likes = [v.get("likes") or 0 for v in liked.get("videos") or []]
+        failures += len(likes) != 5 or likes != sorted(likes, reverse=True) or not all(likes)
+        # The model's copy has no thumbnail links; the list card's rows have them (TikTok's inline).
+        rows = ((raw.meta or {}).get("list") or {}).get("videos") or []
+        print(f"list card rows: {len(rows)}, inline thumbnails: {sum(str(r.get('thumbnail', '')).startswith('data:image/') for r in rows)}")
+        failures += any("thumbnail" in v for v in liked.get("videos") or []) or len(rows) != 5
+        failures += not any(str(r.get("thumbnail", "")).startswith("data:image/") for r in rows)
         ch = show("channel_info youtube", await bearer.call_tool("channel_info", {"url": YT_CHANNEL}))
         failures += not isinstance(ch.get("subscribers"), int) or not ch.get("handle") or "note" in ch
+        failures += not isinstance(ch.get("videos"), int)
         owner = show("channel_info from a video link", await bearer.call_tool("channel_info", {"url": VIDEOS[0]}))
         failures += owner.get("status") == "error" or not owner.get("name")
         tt = await bearer.call_tool("channel_info", {"url": CHANNEL})
         ch = show("channel_info tiktok", tt)
-        failures += ch.get("status") == "error" or not ch.get("name") or "note" not in ch
+        failures += ch.get("status") == "error" or not ch.get("name") or "note" in ch
+        failures += not all(isinstance(ch.get(k), int) for k in ("followers", "likes", "videos"))
         # TikTok's avatar link is signed, so the card gets the image inline in _meta.
         image = (tt.meta or {}).get("image") or ""
         print(f"channel_info tiktok _meta.image: {image[:30]}… {len(image)} chars")

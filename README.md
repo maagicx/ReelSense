@@ -8,7 +8,7 @@ ReelSense is a self-hosted MCP server that lets Claude (or ChatGPT) read, watch 
 - the same transcription pipeline on TikTok, Instagram, X or a news site as on YouTube, including videos that have no captions at all
 
 It still uses what the platforms do provide, such as chapters, most-replayed moments, comments and channel details, and adds its own on top. It can also:
-- look up video and channel details, list a channel's videos (newest or most popular) and search YouTube
+- look up video and channel details (subscribers or followers, how many videos), list a channel's videos (newest, most viewed or most liked, as a table with thumbnails) and search YouTube
 - read YouTube comments
 - take still frames Claude can look at (slides, on-screen text)
 - identify the music in a video and find tracks on Spotify or Apple Music
@@ -30,8 +30,8 @@ Claude / ChatGPT ──HTTPS + sign-in──▶ your tunnel or reverse proxy ─
 | `transcribe_video` | Transcript of a video, or of one part or chapter of it. Long jobs return a `job_id`. |
 | `get_transcript` | Gets the result of a long job by `job_id`. |
 | `video_info` | Video details only; nothing is downloaded. |
-| `channel_info` | Channel or profile details from a channel or video link. |
-| `list_videos` | A channel's, playlist's or profile's videos, newest or most popular. |
+| `channel_info` | Channel or profile details from a channel or video link, with how many videos it has posted (YouTube, TikTok) and TikTok's followers and total likes. |
+| `list_videos` | A channel's, playlist's or profile's videos, newest, most viewed or most liked: a table with thumbnails, keywords, likes and views. YouTube's listing has no likes, so ranked YouTube lists read each video's likes, and "most liked" ranks the 30 most viewed (`LIKES_LOOKUP_TOP`). |
 | `search_videos` | YouTube keyword search, optionally limited to recent uploads. |
 | `get_comments` | Top comments on a YouTube video. |
 | `get_frames` | Still images at chosen times, or the slides of a TikTok photo slideshow. |

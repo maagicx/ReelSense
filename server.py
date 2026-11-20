@@ -310,7 +310,8 @@ if signin.gate_on():
 
 
 # MCP App: clients that support io.modelcontextprotocol/ui render video_info,
-# transcribe_video, get_transcript and channel_info as a card (thumbnail or avatar, title or name, stats); others get the JSON.
+# transcribe_video, get_transcript and channel_info as a card (thumbnail or avatar, title or name, stats),
+# and list_videos / search_videos as a table; others get the JSON.
 # The card loads images from these hosts directly. Any other image (TikTok's signed links,
 # CDNs that refuse other sites) is fetched here and handed over inline in the result's
 # _meta, which is for the UI rather than the model.
@@ -518,58 +519,113 @@ async def video_info(url: str, full: bool = False) -> dict:
     return result
 
 
-async def _listing(kind: str, platform: str, fetch, *args) -> dict:
+# A list's card shows thumbnails for its first LIST_CARD_THUMBS rows. Those on hosts the
+# card can't load (TikTok's signed covers) are fetched and shrunk here, this many at once.
+LIST_CARD_THUMBS = 50
+LIST_THUMB_WORKERS = 8
+
+
+def _list_card(result: dict, heading: dict) -> dict:
+    """The list card's _meta: the heading and every row, with each row's thumbnail as a
+    URL the card can load or a small inline image."""
+    rows = [dict(v) for v in result["videos"]]
+    fetch = [(i, v["thumbnail"]) for i, v in enumerate(rows[:LIST_CARD_THUMBS])
+             if isinstance(v.get("thumbnail"), str)
+             and not any(v["thumbnail"].startswith(h + "/") for h in CARD_IMAGE_HOSTS)]
+    for i, _ in fetch:
+        rows[i].pop("thumbnail")
+    if fetch:
+        with ThreadPoolExecutor(max_workers=LIST_THUMB_WORKERS) as pool:
+            for (i, _), data in zip(fetch, pool.map(lambda f: media.small_image_data_uri(f[1]), fetch)):
+                if data:
+                    rows[i]["thumbnail"] = data
+    for v in rows[LIST_CARD_THUMBS:]:
+        v.pop("thumbnail", None)
+    card = {**heading, "videos": rows}
+    for key in ("scanned", "ranked_by", "channel", "scan_note", "likes_note", "published_note"):
+        if key in result:
+            card[key] = result[key]
+    return card
+
+
+async def _listing(kind: str, platform: str, heading: dict, fetch, *args) -> ToolResult:
+    """A list tool's result: JSON text for the model (thumbnails left out: long links it
+    doesn't need) and, in _meta.list, the rows for the list card."""
     (uid, name), t0 = _caller(), time.time()
     if not JOBS.take_slot(uid, "meta", MAX_META_CALLS_PER_HOUR):
-        return {"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} info/list/search/channel calls per hour reached."}
+        return _json_result({"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} info/list/search/channel calls per hour reached."})
+    meta = None
     try:
         videos, approx, *extra = await asyncio.to_thread(fetch, *args, f"{kind}-{uuid.uuid4().hex[:8]}")
         result = {"videos": videos, "count": len(videos), **(extra[0] if extra else {})}
         if approx and any("published" in v for v in videos):
             result["published_note"] = "YouTube dates are approximate (derived from 'N weeks ago')."
+        meta = {"list": await asyncio.to_thread(_list_card, result, {**heading, "platform": platform})}
     except UserError as exc:
         videos, result = [], {"status": "error", "error": str(exc)}
     log.info(f"[mcp] {name} {kind} {platform} {len(videos)} items {int((time.time() - t0) * 1000)}ms")
-    return result
+    view = dict(result)
+    if "videos" in view:
+        view["videos"] = [{k: v for k, v in row.items() if k != "thumbnail"} for row in view["videos"]]
+    return _json_result(view, meta)
 
 
-@mcp.tool
-async def list_videos(url: str, limit: int = 20, sort: str = "newest") -> dict:
+def _json_result(view: dict, meta: Optional[dict] = None) -> ToolResult:
+    text = json.dumps(view, ensure_ascii=False, separators=(",", ":"))
+    return ToolResult(content=[TextContent(type="text", text=text)], meta=meta)
+
+
+LIST_SORTS = {"newest": None, "popular": "views", "views": "views", "likes": "likes"}
+
+
+@mcp.tool(app=CARD_APP, output_schema=None)
+async def list_videos(url: str, limit: int = 20, sort: str = "newest") -> ToolResult:
     """List videos on a channel, playlist or profile URL: [{url, title, duration,
-    published?, views?, short?}]. Max 100. sort="newest" (default) reads only the newest
-    `limit`; a bare YouTube channel URL then lists its Videos tab (pass .../shorts or
-    .../streams for those). For "most popular / most viewed / top videos" use
-    sort="popular": it scans the whole channel (on YouTube both Videos and Shorts) and
-    ranks by views; the result says how many were scanned."""
+    published?, views?, likes?, comments?, shares?, keywords?, short?}], shown as a table
+    with thumbnails. Max 100. sort="newest" (default) reads only the newest `limit`; a
+    bare YouTube channel URL then lists its Videos tab (pass .../shorts or .../streams
+    for those). For "most popular / most viewed / top videos" use sort="popular", for
+    "most liked" sort="likes": both scan the whole channel (on YouTube both Videos and
+    Shorts) and rank it; the result says how many were scanned. YouTube listings have no
+    likes, so ranked YouTube lists read each video's likes (slower, about 30 s for likes):
+    sort="likes" ranks the most viewed 30 by likes, as likes_note says; tell the user.
+    keywords are the video's tags, or its caption's hashtags (TikTok)."""
     order = sort.strip().lower()
-    if order not in ("newest", "popular"):
-        return {"status": "error", "error": 'sort must be "newest" or "popular".'}
-    fetch = media.list_popular if order == "popular" else media.list_flat
-    return await _listing("list", media.platform_of(url), fetch, url, limit)
+    if order not in LIST_SORTS:
+        return _json_result({"status": "error", "error": 'sort must be "newest", "popular" or "likes".'})
+    by = LIST_SORTS[order]
+    heading = {"sort": by or "newest", "limit": limit}
+    if by:
+        return await _listing("list", media.platform_of(url), heading, media.list_ranked, url, limit, by)
+    return await _listing("list", media.platform_of(url), heading, media.list_flat, url, limit)
 
 
-@mcp.tool
+@mcp.tool(app=CARD_APP, output_schema=None)
 async def search_videos(query: str, limit: int = 10, platform: str = "youtube",
-                        uploaded_within: Optional[str] = None) -> dict:
-    """Search for videos by keywords: [{url, title, duration, published?, views?}]. YouTube only.
-    Max 100. Results are by relevance; for the latest videos pass uploaded_within ("hour",
-    "day", "week", "month" or "year"): only videos from that window, newest first."""
+                        uploaded_within: Optional[str] = None) -> ToolResult:
+    """Search for videos by keywords: [{url, title, duration, published?, views?}], shown
+    as a table with thumbnails. YouTube only. Max 100. Results are by relevance; for the
+    latest videos pass uploaded_within ("hour", "day", "week", "month" or "year"): only
+    videos from that window, newest first."""
     if platform.strip().lower() != "youtube":
-        return {"status": "error", "error": f"Search is not supported on {platform}; only youtube."}
+        return _json_result({"status": "error", "error": f"Search is not supported on {platform}; only youtube."})
     if not query.strip():
-        return {"status": "error", "error": "Empty search query."}
+        return _json_result({"status": "error", "error": "Empty search query."})
     within = (uploaded_within or "").strip().lower() or None
     if within and within not in media.UPLOAD_WINDOWS:
-        return {"status": "error", "error": f"uploaded_within must be one of: {', '.join(media.UPLOAD_WINDOWS)}."}
-    return await _listing("search", "youtube", media.search, query.strip(), limit, within)
+        return _json_result({"status": "error", "error": f"uploaded_within must be one of: {', '.join(media.UPLOAD_WINDOWS)}."})
+    heading = {"search": query.strip(), "sort": "newest" if within else "relevance", "limit": limit}
+    return await _listing("search", "youtube", heading, media.search, query.strip(), limit, within)
 
 
 @mcp.tool(app=CARD_APP)
 async def channel_info(url: str) -> dict:
     """Channel or profile details for a channel/profile link, or a video link (resolved to
     the channel that posted it): name, handle, channel_id, url, description, avatar
-    (YouTube, TikTok and others whose profile page has one); on YouTube also subscribers
-    and verified. Other platforms return what exists plus a note."""
+    (YouTube, TikTok and others whose profile page has one), videos (how many it has
+    posted: YouTube and TikTok); on YouTube also subscribers and verified, on TikTok
+    followers, following and likes (total on all its videos). Other platforms return
+    what exists plus a note."""
     (uid, name), t0 = _caller(), time.time()
     if not JOBS.take_slot(uid, "meta", MAX_META_CALLS_PER_HOUR):
         return {"status": "error", "error": f"Limit of {MAX_META_CALLS_PER_HOUR} info/list/search/channel calls per hour reached."}
@@ -1266,16 +1322,20 @@ key stats as a table, and save the full transcript as a Markdown file with times
 tags and, on YouTube, whether it has automatic captions. Shown as a card with the thumbnail in Claude.
 - "What is this video about and how long is it? <link>"
 
-**Browse and search.**
+**Browse and search.** Lists show in Claude as a table with thumbnails, keywords, likes and views.
 - "List the last 10 videos from https://www.youtube.com/@channel" (also playlists and TikTok profiles)
 - "What are the most popular videos on https://www.youtube.com/@channel?" (ranks the whole \
 channel, Shorts included, by views)
+- "Top 10 most liked videos of https://www.tiktok.com/@name" (TikTok: exact and quick). On YouTube \
+likes are read video by video, so the 30 most viewed are ranked by likes (about 30 seconds).
 - "Search YouTube for <topic>, 5 results"
 - "Latest YouTube videos about <topic> from the past month" (newest first; dates are approximate)
 
-**Channel details.** Name, handle, description and profile picture, shown as a card in Claude; \
-on YouTube also subscribers and verified status.
-- "How many subscribers does https://www.youtube.com/@channel have?"
+**Channel details.** Name, handle, description, profile picture and how many videos it has \
+posted, shown as a card in Claude; on YouTube also subscribers and verified status, on TikTok \
+followers, following and total likes.
+- "How many subscribers and videos does https://www.youtube.com/@channel have?"
+- "How many followers and likes does https://www.tiktok.com/@name have?"
 
 **See the video.** Stills at chosen moments (up to {media.MAX_FRAMES} at a time), for slides, \
 on-screen text or charts the speech doesn't cover. Claude reads them, and in Claude they show as \

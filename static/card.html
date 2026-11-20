@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Media card</title>
-<!-- MCP App for channel_info, video_info, the transcribe tools, get_frames, identify_music and the track searches: the host renders this in a sandboxed iframe
+<!-- MCP App for channel_info, video_info, list_videos, search_videos, the transcribe tools, get_frames, identify_music and the track searches: the host renders this in a sandboxed iframe
      and posts the tool result to it (io.modelcontextprotocol/ui). Self-contained: no
      external scripts. Images come from the result's URL, or inline from _meta.image when
      the server fetched one the card couldn't load itself. -->
@@ -101,6 +101,30 @@
   .credited { margin: 10px 0 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
   .flag { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
   .nomatch { margin: 8px 0 0; color: var(--muted); }
+  .list { padding: 14px 16px; }
+  .vids { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  .vids th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 4px 6px;
+    border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .vids th.sorted { color: var(--fg); }
+  .vids td { padding: 6px; border-top: 1px solid var(--line); vertical-align: top; }
+  .vids tr:first-child td { border-top: 0; }
+  .vids tr[hidden] { display: none; }
+  .vids .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .vids .rank { color: var(--muted); width: 1%; padding-left: 0; }
+  .vids .pic { width: 1%; padding-left: 0; }
+  .vids .pic a { display: block; position: relative; width: 96px; aspect-ratio: 16 / 9; border-radius: 6px;
+    overflow: hidden; background: var(--line); }
+  .vids .pic a.portrait { width: 54px; aspect-ratio: 3 / 4; }
+  .vids .pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .vids .pic .badge { right: 3px; bottom: 3px; font-size: 10px; padding: 0 3px; }
+  .vids .vt { font-weight: 600; color: inherit; text-decoration: none; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .vids .vt:hover { text-decoration: underline; }
+  .vids .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .kw { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+  .kw span { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .listnote { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+  @media (max-width: 560px) { .vids .opt { display: none; } }
   @media (max-width: 440px) {
     .card.video { flex-direction: column; }
     .card.video .thumb { width: 100%; }
@@ -202,6 +226,9 @@
     const meta = el("p", "meta");
     if (ch.handle && ch.handle !== name) meta.append(el("span", null, ch.handle));
     if (typeof ch.subscribers === "number") meta.append(el("span", null, `${compact(ch.subscribers)} subscribers`));
+    if (typeof ch.followers === "number") meta.append(el("span", null, `${compact(ch.followers)} followers`));
+    if (typeof ch.videos === "number") meta.append(el("span", null, `${compact(ch.videos)} video${ch.videos === 1 ? "" : "s"}`));
+    if (typeof ch.likes === "number") meta.append(el("span", null, `${compact(ch.likes)} likes`));
     if (ch.platform) meta.append(el("span", null, platformName(ch.platform)));
     if (meta.childNodes.length) body.append(meta);
     if (ch.description) body.append(el("p", "desc", ch.description));
@@ -487,6 +514,92 @@
     credited();
   }
 
+  // list_videos and search_videos: a table of the rows in _meta.list, numbers right-aligned,
+  // the ranked column highlighted, the first SHOWN rows with the rest behind "Show all".
+  function renderList(ls) {
+    root.className = "list";
+    root.replaceChildren();
+    const rows = ls.videos || [];
+    const ranked = { views: "views", likes: "likes" }[ls.sort];
+    const title = ls.search ? `“${ls.search}”` : ls.channel || "Videos";
+    root.append(el("p", "title", title));
+    const meta = el("p", "meta");
+    const what = ranked ? `Top ${rows.length} by ${ranked}` : ls.search
+      ? (ls.sort === "newest" ? `${rows.length} newest results` : `${rows.length} results`)
+      : `${rows.length} newest`;
+    meta.append(el("span", null, typeof ls.scanned === "number" && ranked ? `${what} of ${compact(ls.scanned)} scanned` : what));
+    if (ls.platform) meta.append(el("span", null, platformName(ls.platform)));
+    root.append(meta);
+    if (!rows.length) { root.append(el("p", "nomatch", "No videos found.")); return; }
+    // A column only when most rows have it (YouTube's listing has comment counts for a few).
+    const has = k => rows.filter(v => typeof v[k] === "number").length * 2 >= rows.length;
+    const cols = [["likes", "Likes"], ["views", "Views"], ["comments", "Comments"], ["shares", "Shares"]]
+      .filter(([k]) => k === ranked || has(k));
+    // Ranked by likes: likes first; otherwise views lead. Comments and shares hide when narrow.
+    if (ranked === "likes") cols.sort((a, b) => (b[0] === "likes") - (a[0] === "likes"));
+    else cols.sort((a, b) => (b[0] === "views") - (a[0] === "views"));
+    const table = el("table", "vids");
+    const head = el("tr");
+    head.append(el("th", "rank", "#"), el("th", "pic"), el("th", null, "Video"));
+    cols.forEach(([k, label]) => head.append(el("th",
+      `num${k === ranked ? " sorted" : ""}${k === "comments" || k === "shares" ? " opt" : ""}`, label)));
+    const thead = el("thead");
+    thead.append(head);
+    const tbody = el("tbody");
+    const SHOWN = 25;
+    rows.forEach((v, i) => {
+      const tr = el("tr");
+      if (i >= SHOWN && rows.length > SHOWN + 5) tr.hidden = true;
+      tr.append(el("td", "num rank", String(i + 1)));
+      const pic = el("td", "pic");
+      if (isImage(v.thumbnail)) {
+        const a = isHttps(v.url) ? link(null, "", v.url) : el("a");
+        const img = el("img");
+        img.alt = "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        img.onload = () => { if (img.naturalHeight > img.naturalWidth) a.classList.add("portrait"); };
+        img.onerror = () => a.remove();
+        img.src = v.thumbnail;
+        a.append(img);
+        if (v.duration) a.append(el("span", "badge", duration(v.duration)));
+        pic.append(a);
+      }
+      tr.append(pic);
+      const cell = el("td");
+      cell.append(isHttps(v.url) ? link("vt", v.title || "Untitled video", v.url) : el("span", "vt", v.title || "Untitled video"));
+      const sub = [];
+      if (v.published) sub.push(date(v.published));
+      if (v.duration && !isImage(v.thumbnail)) sub.push(duration(v.duration));
+      if (v.short) sub.push("Short");
+      if (sub.length) cell.append(el("div", "sub", sub.join(" · ")));
+      if (Array.isArray(v.keywords) && v.keywords.length) {
+        const kw = el("div", "kw");
+        v.keywords.slice(0, 6).forEach(k => kw.append(el("span", null, k)));
+        cell.append(kw);
+      }
+      tr.append(cell);
+      cols.forEach(([k]) => {
+        const n = v[k];
+        const td = el("td", `num${k === "comments" || k === "shares" ? " opt" : ""}`, typeof n === "number" ? compact(n) : "–");
+        if (typeof n === "number") td.title = n.toLocaleString();
+        tr.append(td);
+      });
+      tbody.append(tr);
+    });
+    table.append(thead, tbody);
+    root.append(table);
+    const hidden = [...tbody.children].filter(r => r.hidden);
+    if (hidden.length) {
+      const more = el("button", "open", `Show all ${rows.length}`);
+      more.type = "button";
+      more.style.marginTop = "6px";
+      more.addEventListener("click", () => { hidden.forEach(r => { r.hidden = false; }); more.remove(); reportSize(); });
+      root.append(more);
+    }
+    for (const note of [ls.likes_note, ls.scan_note]) if (note) root.append(el("p", "listnote", note));
+  }
+
   function showError(text) {
     root.className = "error";
     root.textContent = text;
@@ -521,6 +634,12 @@
   }
 
   function onToolResult(result) {
+    const ls = result && !result.isError && result._meta && result._meta.list;
+    if (ls) {
+      renderList(ls);
+      reportSize();
+      return;
+    }
     const mu = result && !result.isError && result._meta && result._meta.music;
     if (mu) {
       renderMusic(mu);

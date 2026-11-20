@@ -18,6 +18,7 @@ import shutil
 import socket
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 from urllib.parse import parse_qs, quote_plus, urlencode, urljoin, urlparse
@@ -39,6 +40,12 @@ MAX_DESCRIPTION_CHARS = int(os.environ.get("MAX_DESCRIPTION_CHARS") or 500)
 MAX_TAGS = 100
 MAX_LIST_ITEMS = int(os.environ.get("MAX_LIST_ITEMS") or 100)
 MAX_POPULAR_SCAN = int(os.environ.get("MAX_POPULAR_SCAN") or 1000)
+# Ranking by likes where a listing has none (YouTube): likes are read video by video for
+# the LIKES_LOOKUP_TOP most viewed (at most MAX_LIKES_LOOKUP), this many at a time.
+LIKES_LOOKUP_TOP = int(os.environ.get("LIKES_LOOKUP_TOP") or 30)
+MAX_LIKES_LOOKUP = int(os.environ.get("MAX_LIKES_LOOKUP") or 60)
+LIKES_LOOKUP_WORKERS = int(os.environ.get("LIKES_LOOKUP_WORKERS") or 4)
+MAX_KEYWORDS = 10  # per listed video: its tags, or the hashtags in its caption
 MAX_FRAMES = int(os.environ.get("MAX_FRAMES") or 10)
 FRAME_WIDTH = int(os.environ.get("FRAME_WIDTH") or 768)
 FRAME_SOURCE_HEIGHT = 720  # read frames from a stream no taller than this
@@ -528,6 +535,41 @@ def probe(url: str, tag: str, with_key: bool = False, allow_photo: bool = False)
     return out
 
 
+_HASHTAG_RE = re.compile(r"#(\w[\w.]*)")
+
+
+def _keywords(info: dict) -> list[str]:
+    """A video's tags, or failing those the hashtags in its caption (TikTok has no tags)."""
+    tags = _clean_list(info.get("tags"))
+    if not tags:
+        # The description, not the title: TikTok's title is the caption cut short, which
+        # can slice a hashtag in two.
+        text = info.get("description") or info.get("title") or ""
+        tags = _clean_list(m.rstrip(".") for m in _HASHTAG_RE.findall(text))
+    seen, out = set(), []
+    for t in tags:
+        if t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out[:MAX_KEYWORDS]
+
+
+def _list_thumbnail(entry: dict) -> Optional[str]:
+    """One thumbnail for a listed video: TikTok's still cover (its dynamicCover can be
+    animated), else the smallest at least 320 px wide, else yt-dlp's best (the last)."""
+    if isinstance(entry.get("thumbnail"), str):
+        return entry["thumbnail"]
+    thumbs = [t for t in entry.get("thumbnails") or [] if isinstance(t, dict) and t.get("url")]
+    for name in ("cover", "originCover"):
+        for t in thumbs:
+            if t.get("id") == name:
+                return t["url"]
+    wide = [t for t in thumbs if (t.get("width") or 0) >= 320]
+    if wide:
+        return min(wide, key=lambda t: t["width"])["url"]
+    return thumbs[-1]["url"] if thumbs else None
+
+
 def _flat_entry(entry: dict) -> Optional[dict]:
     if entry.get("_type") == "playlist" or not entry.get("url"):
         return None  # a nested tab or sub-playlist, not a video
@@ -536,7 +578,45 @@ def _flat_entry(entry: dict) -> Optional[dict]:
     _put(out, "duration", entry.get("duration"))
     _put(out, "published", published)
     _put(out, "views", entry.get("view_count"))
+    _put(out, "likes", entry.get("like_count"))
+    _put(out, "comments", entry.get("comment_count"))
+    _put(out, "shares", entry.get("repost_count"))
+    _put(out, "keywords", _keywords(entry))
+    _put(out, "thumbnail", _list_thumbnail(entry))
     return out
+
+
+def _list_owner(info: dict) -> Optional[str]:
+    """Whose videos a flat listing holds: the channel, else the first video's uploader."""
+    first = next((e for e in info.get("entries") or [] if isinstance(e, dict)), {})
+    return (info.get("channel") or info.get("uploader") or first.get("channel")
+            or first.get("uploader") or info.get("title"))
+
+
+def _look_up(videos: list[dict], tag: str) -> int:
+    """Fills in likes (and comments, shares and keywords where missing) from one metadata
+    read per video, for listings that carry none (YouTube's). LIKES_LOOKUP_WORKERS at a
+    time; a video that can't be read keeps what it has. Returns how many got likes."""
+    def one(item):
+        i, v = item
+        try:
+            info = _ytdl(v["url"], {**_base_opts(v["url"]), "skip_download": True}, f"{tag}-lk{i}")
+        except UserError:
+            return False
+        for key, src in (("likes", "like_count"), ("comments", "comment_count"),
+                         ("shares", "repost_count"), ("views", "view_count")):
+            if key not in v:
+                _put(v, key, info.get(src))
+        if "keywords" not in v:
+            _put(v, "keywords", _keywords(info))
+        # The video's own date is exact; YouTube's listing dates are "3 weeks ago" estimates.
+        _put(v, "published", _date(info.get("upload_date")) or v.get("published"))
+        return "likes" in v
+
+    if not videos:
+        return 0
+    with ThreadPoolExecutor(max_workers=max(1, LIKES_LOOKUP_WORKERS)) as pool:
+        return sum(pool.map(one, enumerate(videos)))
 
 
 def _broken_extractor(url: str) -> Optional[str]:
@@ -564,11 +644,11 @@ def _flat_extract(target: str, tag: str, allow_video: bool = False, **extra) -> 
     return info
 
 
-def list_flat(target: str, limit: int, tag: str) -> tuple[list[dict], bool]:
+def list_flat(target: str, limit: int, tag: str) -> tuple[list[dict], bool, dict]:
     """Channel/playlist/profile URL or a yt-dlp search target ("ytsearchN:..."), listed
     without visiting each video. playlistend stops yt-dlp walking a huge channel.
-    Returns (videos, dates_approximate): YouTube's flat listings carry no upload date,
-    only "3 weeks ago" text, which approximate_date turns into a rough one."""
+    Returns (videos, dates_approximate, {channel?}): YouTube's flat listings carry no
+    upload date, only "3 weeks ago" text, which approximate_date turns into a rough one."""
     limit = max(1, min(limit, MAX_LIST_ITEMS))
     is_search = target.startswith("ytsearch")
     if not is_search:
@@ -577,21 +657,30 @@ def list_flat(target: str, limit: int, tag: str) -> tuple[list[dict], bool]:
     extra = {"extractor_args": {"youtubetab": {"approximate_date": [""]}}} if youtube else {}
     info = _flat_extract(target, f"{tag}-list", playlistend=limit, **extra)
     entries = (_flat_entry(e) for e in info.get("entries") or [] if isinstance(e, dict))
-    return [e for e in entries if e][:limit], youtube
+    meta = {}
+    if not is_search:
+        _put(meta, "channel", _list_owner(info))
+    return [e for e in entries if e][:limit], youtube, meta
 
 
-def list_popular(target: str, limit: int, tag: str) -> tuple[list[dict], bool, dict]:
-    """Most-viewed videos, ranked here: YouTube ignores sort=p in tab URLs and yt-dlp can't
-    pick the Popular chip, so this reads up to MAX_POPULAR_SCAN newest entries per tab and
-    sorts by views. A bare YouTube channel covers its Videos and Shorts tabs. Returns
-    (videos, dates_approximate, {scanned, scan_note?})."""
+RANKINGS = {"views": "views", "likes": "likes"}
+
+
+def list_ranked(target: str, limit: int, by: str, tag: str) -> tuple[list[dict], bool, dict]:
+    """Most-viewed or most-liked videos, ranked here: YouTube ignores sort=p in tab URLs and
+    yt-dlp can't pick the Popular chip, so this reads up to MAX_POPULAR_SCAN newest entries
+    per tab and sorts them. A bare YouTube channel covers its Videos and Shorts tabs.
+    TikTok's listing has likes; YouTube's doesn't, so for by="likes" the LIKES_LOOKUP_TOP
+    most viewed are read one by one and ranked by likes. Ranked rows without likes get
+    them the same way. Returns (videos, dates_approximate, {scanned, channel?, ...notes})."""
+    key = RANKINGS[by]
     limit = max(1, min(limit, MAX_LIST_ITEMS))
     url = normalise_url(target)
     root = _YT_CHANNEL_RE.match(url)
     tabs = [f"{root.group(1)}/videos", f"{root.group(1)}/shorts"] if root else [url]
     youtube = platform_of(url) == "youtube"
     extra = {"extractor_args": {"youtubetab": {"approximate_date": [""]}}} if youtube else {}
-    videos, capped = [], False
+    videos, capped, owner = [], False, None
     for i, tab in enumerate(tabs):
         try:
             info = _flat_extract(tab, f"{tag}-pop{i}", playlistend=MAX_POPULAR_SCAN, **extra)
@@ -599,19 +688,32 @@ def list_popular(target: str, limit: int, tag: str) -> tuple[list[dict], bool, d
             if i == 0:
                 raise
             continue  # a channel without a Shorts tab
+        owner = owner or _list_owner(info)
         entries = [e for e in (_flat_entry(x) for x in info.get("entries") or [] if isinstance(x, dict)) if e]
         capped |= len(entries) >= MAX_POPULAR_SCAN
         for e in entries:
             if "/shorts/" in e["url"]:
                 e["short"] = True
         videos += entries
-    meta = {"scanned": len(videos)}
+    meta = {"scanned": len(videos), "ranked_by": key}
+    _put(meta, "channel", owner)
     if capped:
         meta["scan_note"] = f"Only the newest {MAX_POPULAR_SCAN} per tab were scanned; older videos aren't ranked."
-    if not any("views" in v for v in videos):
-        meta["scan_note"] = "This platform gave no view counts, so the order is the platform's own."
-    videos.sort(key=lambda v: v.get("views") or 0, reverse=True)
-    return videos[:limit], youtube, meta
+    by_views = lambda v: v.get("views") or 0  # noqa: E731
+    if key == "likes" and videos and not any("likes" in v for v in videos):
+        videos.sort(key=by_views, reverse=True)
+        videos = videos[:min(max(limit, LIKES_LOOKUP_TOP), MAX_LIKES_LOOKUP)]
+        found = _look_up(videos, tag)
+        meta["likes_note"] = (f"This platform's listing has no likes, so they were read for the "
+                              f"{len(videos)} most viewed of {meta['scanned']} scanned ({found} had "
+                              f"them); the ranking is among those.")
+    elif not any(key in v for v in videos):
+        meta["scan_note"] = f"This platform gave no {key} counts, so the order is the platform's own."
+    videos.sort(key=lambda v: v.get(key) or 0, reverse=True)
+    top = videos[:limit]
+    if key == "views" and not any("likes" in v for v in videos):
+        _look_up(top[:MAX_LIKES_LOOKUP], tag)  # likes for the rows shown
+    return top, youtube, meta
 
 
 # YouTube search "upload date" filter: name -> (protobuf enum in the sp= param, days).
@@ -625,14 +727,14 @@ def search(query: str, limit: int, within: Optional[str], tag: str) -> tuple[lis
     """YouTube keyword search; with `within`, only videos uploaded in that window, newest first."""
     limit = max(1, min(limit, MAX_LIST_ITEMS))
     if not within:
-        return list_flat(f"ytsearch{limit}:{query}", limit, tag)
+        return list_flat(f"ytsearch{limit}:{query}", limit, tag)[:2]
     code, days = UPLOAD_WINDOWS[within]
     # sp = {2: {1: upload date, 2: type video}}
     sp = base64.b64encode(bytes([0x12, 0x04, 0x08, code, 0x10, 0x01])).decode()
     url = f"https://www.youtube.com/results?search_query={quote_plus(query)}&sp={quote_plus(sp)}"
     # Only the top `limit` by relevance: deeper rows are weak fuzzy matches, which the
     # date sort below would otherwise push to the top. Fewer results beat wrong ones.
-    videos, approx = list_flat(url, limit, tag)
+    videos, approx, _ = list_flat(url, limit, tag)
     # Dates are approximate ("2 weeks ago"), so allow a day of slack at the edge.
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days + 1)).strftime("%Y-%m-%d")
     videos = [v for v in videos if v.get("published", "") >= cutoff]
@@ -652,8 +754,10 @@ def _avatar(thumbnails) -> Optional[str]:
 
 def channel(url: str, tag: str) -> dict:
     """Channel/profile details from one flat pass. Only YouTube's tab page carries
-    subscriber and verified fields; TikTok's extractor discards the profile stats, and
-    its channel fields sit on the entries rather than the playlist, hence one entry.
+    subscriber and verified fields, plus a video count from its uploads playlist.
+    TikTok's extractor discards the profile stats, so followers, following, likes and
+    videos come from the profile page; its channel fields sit on the entries rather than
+    the playlist, hence one entry.
     A video link is resolved to the channel that posted it."""
     url = youtube_channel_url(normalise_url(url))
     info = _flat_extract(url, f"{tag}-channel", allow_video=True, playlistend=1)
@@ -684,11 +788,28 @@ def channel(url: str, tag: str) -> dict:
     _put(out, "description", _description(info))
     _put(out, "subscribers", info.get("channel_follower_count"))
     _put(out, "verified", info.get("channel_is_verified"))
-    _put(out, "avatar", _avatar(info.get("thumbnails")) or (
-        None if platform == "youtube" else page_avatar(out.get("url") or url)))
-    if "subscribers" not in out:
+    page = {} if platform == "youtube" else profile_page(out.get("url") or url)
+    _put(out, "avatar", _avatar(info.get("thumbnails")) or page.get("avatar"))
+    out.update(page.get("stats") or {})
+    if platform == "youtube":
+        _put(out, "videos", _youtube_upload_count(out.get("channel_id"), tag))
+    if not any(k in out for k in ("subscribers", "followers", "videos")):
         out["note"] = f"Channel statistics are not available for {platform} via yt-dlp."
     return out
+
+
+def _youtube_upload_count(channel_id: Optional[str], tag: str) -> Optional[int]:
+    """How many public uploads (videos, Shorts and past streams) a YouTube channel has:
+    the count on its uploads playlist (UC... -> UU...), read without listing it."""
+    if not (isinstance(channel_id, str) and channel_id.startswith("UC")):
+        return None
+    try:
+        info = _flat_extract(f"https://www.youtube.com/playlist?list=UU{channel_id[2:]}",
+                             f"{tag}-count", playlistend=1)
+    except UserError:
+        return None
+    count = info.get("playlist_count")
+    return count if isinstance(count, int) else None
 
 
 # ---------------------------------------------------------------- card images
@@ -707,32 +828,70 @@ _OG_IMAGE_RE = re.compile(
 _AVATAR_PAGES = {"tiktok", "twitch.tv", "soundcloud.com"}
 
 
-def page_avatar(url: str) -> Optional[str]:
-    """Profile picture from the profile page, for platforms whose yt-dlp extractor has
-    none: TikTok's embedded page JSON (avatarThumb, ~4 KB), else og:image. Best effort:
-    None on any failure. TikTok's link is signed and expires."""
+_TIKTOK_STATS_RE = re.compile(r'"(statsV2|stats)"\s*:\s*(\{[^{}]*"followerCount"[^{}]*\})')
+# TikTok profile stats -> channel_info's keys.
+_TIKTOK_STAT_KEYS = {"followerCount": "followers", "followingCount": "following",
+                     "heartCount": "likes", "videoCount": "videos"}
+
+
+def _tiktok_stats(text: str) -> dict:
+    """The profile's counts from its page JSON: statsV2 (exact, as strings) over stats
+    (rounded). Only the user's own block has followerCount; each video's stats don't."""
+    found = {}
+    for m in _TIKTOK_STATS_RE.finditer(text):
+        try:
+            block = json.loads(m.group(2))
+        except ValueError:
+            continue
+        found.setdefault(m.group(1), block)
+    block = found.get("statsV2") or found.get("stats") or {}
+    out = {}
+    for src, key in _TIKTOK_STAT_KEYS.items():
+        try:
+            out[key] = int(block[src])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return out
+
+
+def profile_page(url: str) -> dict:
+    """What the profile page (https://host/<name>) gives, for platforms whose yt-dlp
+    extractor drops it: {avatar?, stats?}. The avatar is TikTok's embedded page JSON
+    (avatarThumb, ~4 KB), else og:image; stats are TikTok's followers, following, likes
+    and videos. Best effort: {} on any failure. TikTok's avatar link is signed and expires."""
     parts = urlparse(url)
     name = parts.path.strip("/").split("/")[0]
     if platform_of(url) not in _AVATAR_PAGES or not name:
-        return None
+        return {}
     try:
         r = requests.get(f"https://{parts.hostname}/{name}", headers=_BROWSER_HEADERS, timeout=10)
         r.raise_for_status()
-        if m := _TIKTOK_AVATAR_RE.search(r.text):
+        text = r.text
+    except requests.RequestException:
+        return {}
+    out: dict = {}
+    try:
+        if m := _TIKTOK_AVATAR_RE.search(text):
             found = json.loads(f'"{m.group(1)}"')
-        elif m := _OG_IMAGE_RE.search(r.text):
+        elif m := _OG_IMAGE_RE.search(text):
             found = html.unescape(m.group(1) or m.group(2))
         else:
-            return None
-    except (requests.RequestException, ValueError):
-        return None
-    return found if found.startswith("https://") else None
+            found = ""
+    except ValueError:
+        found = ""
+    if found.startswith("https://"):
+        out["avatar"] = found
+    if platform_of(url) == "tiktok":
+        _put(out, "stats", _tiktok_stats(text))
+    return out
 
 
-def image_data_uri(url: str) -> Optional[str]:
-    """An image as a data: URI, for the card's _meta when the card can't load the URL
-    itself (signed links that expire, CDNs that refuse other sites). None if it fails,
-    isn't an image or is over MAX_CARD_IMAGE_BYTES."""
+def page_avatar(url: str) -> Optional[str]:
+    return profile_page(url).get("avatar")
+
+
+def _fetch_image(url: str, max_bytes: int) -> Optional[tuple[str, bytes]]:
+    """(content type, bytes) of a public https image of at most max_bytes, else None."""
     try:
         for _ in range(5):  # redirects followed by hand, so each hop gets the same check
             if not url.startswith("https://") or not is_public_host(urlparse(url).hostname):
@@ -746,15 +905,54 @@ def image_data_uri(url: str) -> Optional[str]:
                 kind = r.headers.get("content-type", "").split(";")[0].strip().lower()
                 if not kind.startswith("image/"):
                     return None
-                body = r.raw.read(MAX_CARD_IMAGE_BYTES + 1, decode_content=True)
+                body = r.raw.read(max_bytes + 1, decode_content=True)
                 break
         else:
             return None
     except (requests.RequestException, OSError):
         return None
-    if not body or len(body) > MAX_CARD_IMAGE_BYTES:
+    if not body or len(body) > max_bytes:
         return None
+    return kind, body
+
+
+def image_data_uri(url: str) -> Optional[str]:
+    """An image as a data: URI, for the card's _meta when the card can't load the URL
+    itself (signed links that expire, CDNs that refuse other sites). None if it fails,
+    isn't an image or is over MAX_CARD_IMAGE_BYTES."""
+    got = _fetch_image(url, MAX_CARD_IMAGE_BYTES)
+    if not got:
+        return None
+    kind, body = got
     return f"data:{kind};base64,{base64.b64encode(body).decode()}"
+
+
+LIST_THUMB_WIDTH = 160  # px; a list row's thumbnail is shown at about half that
+LIST_THUMB_SOURCE_BYTES = 3_000_000
+LIST_THUMB_KEEP_BYTES = 15_000  # smaller than this is sent as it is
+
+
+def small_image_data_uri(url: str, width: int = LIST_THUMB_WIDTH) -> Optional[str]:
+    """A thumbnail for a list row as a data: URI, shrunk with ffmpeg to `width` px wide:
+    TikTok's covers are 50-125 KB at full size, a list holds dozens of them, and its
+    signed links expire. None on any failure."""
+    got = _fetch_image(url, LIST_THUMB_SOURCE_BYTES)
+    if not got:
+        return None
+    kind, body = got
+    if len(body) <= LIST_THUMB_KEEP_BYTES:
+        return f"data:{kind};base64,{base64.b64encode(body).decode()}"
+    try:
+        run = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", "pipe:0", "-frames:v", "1",
+             "-vf", f"scale={width}:-2:flags=lanczos,format=yuvj420p",
+             "-q:v", "5", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"],
+            input=body, capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if run.returncode or not run.stdout or len(run.stdout) > MAX_CARD_IMAGE_BYTES:
+        return None
+    return f"data:image/jpeg;base64,{base64.b64encode(run.stdout).decode()}"
 
 
 def _ts_date(ts) -> Optional[str]:
