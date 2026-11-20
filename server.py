@@ -32,7 +32,10 @@ import authlib.deprecate  # noqa: E402,F401
 warnings.filterwarnings("ignore", message=r"The httpx module is deprecated")
 
 from fastmcp import Context, FastMCP
-from fastmcp.apps import AppConfig, ResourceCSP, ResourcePermissions
+from fastmcp.apps import AppConfig, ResourceCSP, ResourcePermissions, app_config_to_meta_dict
+from fastmcp.resources import ResourceContent, ResourceResult
+
+MCP_APP_MIME = "text/html;profile=mcp-app"
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import Middleware
@@ -323,11 +326,25 @@ MUSIC_IMAGE_HOSTS = ["https://i.scdn.co", "https://*.mzstatic.com"]
 
 # clipboardWrite: the video card's "Copy transcript" button (it falls back to selecting
 # the text if a host doesn't grant it).
-@mcp.resource(CARD, name="Media card", app=AppConfig(
+CARD_RESOURCE_APP = AppConfig(
     csp=ResourceCSP(resource_domains=CARD_IMAGE_HOSTS + MUSIC_IMAGE_HOSTS),
-    permissions=ResourcePermissions(clipboard_write={})))
+    permissions=ResourcePermissions(clipboard_write={}))
+
+
+@mcp.resource(CARD, name="Media card", app=CARD_RESOURCE_APP)
 def card() -> str:
     return CARD_HTML
+
+
+# Any older card URI gets today's card. ChatGPT keeps the URI it saw in tools/list until the
+# app is refreshed, so after a card.html change it asks for a URI the server no longer lists,
+# and without this it shows "Couldn't open app". A template read doesn't carry the
+# resource's mime type or _meta by itself, so they're set on the content.
+@mcp.resource("ui://transcribe/card-{version}.html", name="Media card (earlier version)",
+              mime_type=MCP_APP_MIME)
+def card_any_version(version: str) -> ResourceResult:
+    return ResourceResult([ResourceContent(CARD_HTML, mime_type=MCP_APP_MIME,
+                                           meta={"ui": app_config_to_meta_dict(CARD_RESOURCE_APP)})])
 
 
 def _with_card_image(result: dict, image_key: str) -> ToolResult:

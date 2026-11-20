@@ -8,7 +8,7 @@
 
 Opens a browser for sign-in (whichever AUTH_PROVIDER the server uses) on first run. Checks: no token / bad token -> 401
 with OAuth metadata, sign-in, health shows who you are, all tools listed, the channel
-card resource, identify_music argument checks, video_info (slim by default, full=true, card fields in _meta.card),
+card resource (and an old card URI), identify_music argument checks, video_info (slim by default, full=true, card fields in _meta.card),
 list_videos, search_videos, channel_info, get_comments, get_frames,
 transcribe_video on a short YouTube video and a TikTok video, then find_on_screen (one copy of the transcript,
 as timestamped lines; segments only on request). --measure prints what the model reads,
@@ -103,6 +103,10 @@ async def main(base: str, quick: bool) -> int:
         failures += not card_uri or any(card_uris[t] != card_uri for t in
                                         ("video_info", "transcribe_video", "get_transcript", "identify_music", "find_on_spotify",
                                          "find_on_apple_music", "find_on_screen", "get_frames"))
+        # A client still holding an older card URI (ChatGPT, until the app is refreshed) gets the same card.
+        old_card = (await bearer.read_resource("ui://transcribe/card-00000000.html"))[0]
+        print(f"old card URI: {old_card.mimeType} {len(old_card.text)} chars")
+        failures += old_card.mimeType != card.mimeType or old_card.text != card.text
         me = show("health", await bearer.call_tool("health", {}))
         failures += me.get("user") in (None, "?") or me.get("impersonation") is not True
         guide = show("help", await bearer.call_tool("help", {}))
